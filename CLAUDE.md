@@ -76,6 +76,27 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
   ~3 min; después solo lo nuevo.
 - `excluded_dirs` excluye por nombre de carpeta en cualquier nivel (`dbGes26_Backup`).
 
+### Renombrado (`indexador.renombrar`, `POST /api/doc/<id>/renombrar {nombre}`)
+- Renombra en disco en la misma carpeta, conservando la extensión original (también sus mayúsculas).
+  `validar_nombre` aplica las reglas de Windows (caracteres prohibidos, reservados, punto/espacio final,
+  200 caracteres, ruta < 260). Se permiten cambios solo de mayúsculas.
+- Toma `_SYNC_LOCK` (espera hasta 5 s) para no cruzarse con la sincronización. Actualiza `archivos` y
+  `documentos` (el trigger `documentos_au` rehace el FTS) y mueve las etiquetas a la nueva `ruta_rel`.
+  Si falla la BD, deshace el renombrado en disco. El mtime no cambia, así que la siguiente
+  sincronización no relee el archivo.
+- UI: edición en el sitio (doble clic en el nombre de Resultados o de la previsualización, F2, botón del
+  lápiz). Intro/salir del campo guarda, Esc cancela; aviso con «Deshacer». Mientras se edita
+  (`state.renaming`) no se refrescan los resultados tras una sincronización.
+
+### Eliminación (`indexador.eliminar`, `POST /api/doc/<id>/eliminar`)
+- **Nunca borrado definitivo**: a la Papelera con `SHFileOperationW` + `FOF_ALLOWUNDO` (ctypes, sin
+  dependencias); en WSL, vía PowerShell (`Microsoft.VisualBasic...DeleteFile SendToRecycleBin`).
+  Se rechazan unidades de red/UNC (`GetDriveTypeW == DRIVE_REMOTE`): allí Windows borraría sin Papelera.
+- Bajo `_SYNC_LOCK`; comprueba que el archivo ya no existe antes de borrar la fila de `archivos`
+  (documentos y FTS en cascada). Archivo abierto en otro programa = código 32 → mensaje claro.
+- Las etiquetas se conservan en `etiquetas.db` (huérfanas): si se restaura, se recuperan.
+- UI: botón papelera / Supr → modal con foco en «Cancelar»; tras borrar se selecciona el siguiente.
+
 ### Búsqueda (`app_finder.py`)
 - Cuatro campos combinables: `todas` (AND), `alguna` (OR), `frase` (literal; varias entre comillas),
   `excluye` (NOT IN). Máx. 10 palabras por campo y 4 frases.
@@ -94,7 +115,7 @@ GET `/api/info`, `/api/search`, `/api/status`, `/api/config`, `/api/doc/<id>[/pd
 POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en el archivo),
 `/api/layout` (guarda anchos de paneles en `finder_config.json`), `/api/config`,
 `/api/etiquetas` (crear), `/api/etiquetas/<id>` (nombre/color/tecla), `/api/etiquetas/<id>/borrar`,
-`/api/etiquetar` (`etiqueta_id`, `accion` poner|quitar, `doc_ids` o `busqueda`).
+`/api/etiquetar` (`etiqueta_id`, `accion` poner|quitar, `doc_ids` o `busqueda`), `/api/doc/<id>/renombrar`, `/api/doc/<id>/eliminar`.
 
 ### Ciclo de vida del proceso
 - Por defecto (`iniciar_finderjr.bat` con doble clic) abre el navegador y **se apaga solo** al cerrar la

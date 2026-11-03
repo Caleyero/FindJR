@@ -31,6 +31,7 @@ const state = {
   sinEt: false, // solo documentos sin ninguna etiqueta
   checked: new Set(), // documentos marcados con la casilla
   lastCheckIdx: null,
+  renaming: false, // hay un nombre en edición
 };
 
 let searchDebounceTimer = null;
@@ -89,11 +90,22 @@ function fmtSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function showToast(msg, duration = 3800) {
+function showToast(msg, duration = 3800, action = null) {
   const c = document.getElementById("toastContainer");
   const el = document.createElement("div");
   el.className = "toast";
   el.textContent = msg;
+  if (action) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "toast-action";
+    b.textContent = action.label;
+    b.addEventListener("click", () => {
+      el.remove();
+      action.fn();
+    });
+    el.appendChild(b);
+  }
   c.appendChild(el);
   setTimeout(() => el.remove(), duration);
 }
@@ -161,12 +173,7 @@ async function runSearch(resetOffset = true, opts = {}) {
     state.items = data.items || [];
     state.terms = data.terms || [];
 
-    document.getElementById("kpiTotalDocs").textContent = fmtNum(state.total_count);
-    const fromIdx = state.total_count === 0 ? 0 : state.offset + 1;
-    const toIdx = Math.min(state.offset + state.items.length, state.total_count);
-    document.getElementById("paginationInfo").textContent = `Mostrando ${fmtNum(fromIdx)}-${fmtNum(toIdx)} de ${fmtNum(state.total_count)} documentos`;
-    document.getElementById("btnPrevPage").disabled = state.offset <= 0;
-    document.getElementById("btnNextPage").disabled = state.offset + state.limit >= state.total_count;
+    updateCounters();
 
     // Los marcados que ya no aparecen dejan de estarlo
     const visibles = new Set(state.items.map((it) => it.id));
@@ -189,6 +196,15 @@ async function runSearch(resetOffset = true, opts = {}) {
     console.error("Error en búsqueda:", err);
     tbody.innerHTML = `<tr><td colspan="4" class="empty-cell">Error en la búsqueda: ${escapeHtml(err.message)}</td></tr>`;
   }
+}
+
+function updateCounters() {
+  document.getElementById("kpiTotalDocs").textContent = fmtNum(state.total_count);
+  const fromIdx = state.total_count === 0 ? 0 : state.offset + 1;
+  const toIdx = Math.min(state.offset + state.items.length, state.total_count);
+  document.getElementById("paginationInfo").textContent = `Mostrando ${fmtNum(fromIdx)}-${fmtNum(toIdx)} de ${fmtNum(state.total_count)} documentos`;
+  document.getElementById("btnPrevPage").disabled = state.offset <= 0;
+  document.getElementById("btnNextPage").disabled = state.offset + state.limit >= state.total_count;
 }
 
 function renderGridRows() {
@@ -218,7 +234,7 @@ function renderGridRows() {
             <span class="date-sub">${pags}</span>${ocr}
           </td>
           <td>
-            <div class="doc-name">${highlightText(it.nombre, terms)}</div>
+            <div class="doc-name" title="Doble clic para cambiar el nombre">${highlightText(it.nombre, terms)}</div>
             ${tagPillsHtml(it.etiquetas)}
             ${hasSearch() ? snippet : ""}
           </td>
@@ -236,9 +252,14 @@ function renderGridRows() {
         toggleCheck(idx, e.target.classList.contains("row-check") ? e.target.checked : !state.checked.has(id), e.shiftKey);
         return;
       }
+      if (e.target.closest(".rename-box")) return;
       if (e.ctrlKey || e.metaKey) return toggleCheck(idx, !state.checked.has(id), false);
       if (e.shiftKey && state.lastCheckIdx !== null) return toggleCheck(idx, true, true);
       selectDocument(id, false);
+    });
+    tr.querySelector(".doc-name").addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      startRename(parseInt(tr.dataset.id, 10), e.currentTarget);
     });
   });
 }
@@ -264,6 +285,7 @@ async function selectDocument(docId, scrollIntoView = true) {
 
     document.getElementById("prevCategoria").textContent = doc.carpeta;
     document.getElementById("prevTitle").textContent = doc.nombre;
+    document.getElementById("prevTitle").title = "Doble clic para cambiar el nombre";
     document.getElementById("prevSubtitle").textContent = [
       `Modificado ${formatDateFromEpoch(doc.mtime)}`,
       `${doc.num_paginas} pág.`,
@@ -350,7 +372,7 @@ async function pollStatus() {
   try {
     const estado = await (await fetch("/api/status")).json();
     updateIndexProgress(estado);
-    if (state.wasIndexing && !estado.activo) {
+    if (state.wasIndexing && !estado.activo && !state.renaming) {
       const u = estado.ultimo || {};
       if (u.status === "ok" && (u.added || u.updated || u.removed)) {
         showToast(`Biblioteca actualizada: +${fmtNum(u.added)} nuevos, ${fmtNum(u.updated)} modificados, ${fmtNum(u.removed)} eliminados.`);
@@ -615,9 +637,20 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (e.key === "Escape") {
       if (tagPopoverOpen()) return closeTagPopover();
       if (document.getElementById("tagsModal").style.display !== "none") return closeTagsModal();
+      if (deleteModalOpen()) return closeDeleteModal();
       if (state.checked.size && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return clearChecks();
     }
     if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName) && document.activeElement.type !== "checkbox") return;
+    if (deleteModalOpen()) return;
+    if (e.key === "Delete" && state.selectedDocId && !state.renaming) {
+      e.preventDefault();
+      return openDeleteModal();
+    }
+    if (e.key === "F2" && state.selectedDocId && !state.renaming) {
+      e.preventDefault();
+      const cell = document.querySelector(`#resultsTbody tr[data-id="${state.selectedDocId}"] .doc-name`);
+      return startRename(state.selectedDocId, cell || document.getElementById("prevTitle"));
+    }
     if (/^[1-9]$/.test(e.key) && !e.ctrlKey && !e.altKey && !e.metaKey && !tagPopoverOpen()) {
       e.preventDefault();
       return toggleTagByKey(parseInt(e.key, 10));
@@ -783,6 +816,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   })();
 
   initTagsUI();
+  document.getElementById("btnDelete").addEventListener("click", openDeleteModal);
+  document.getElementById("btnCancelDelete").addEventListener("click", closeDeleteModal);
+  document.getElementById("btnCloseDelete").addEventListener("click", closeDeleteModal);
+  document.getElementById("btnConfirmDelete").addEventListener("click", confirmDelete);
+  document.getElementById("btnRename").addEventListener("click", () => state.selectedDocId && startRename(state.selectedDocId, document.getElementById("prevTitle")));
+  document.getElementById("prevTitle").addEventListener("dblclick", (e) => {
+    if (state.selectedDocId && !e.target.closest(".rename-box")) startRename(state.selectedDocId, e.currentTarget);
+  });
   await loadInfo();
   await loadEtiquetas();
   await runSearch(true);
@@ -1191,4 +1232,157 @@ function initTagsUI() {
   document.getElementById("btnManageTags").addEventListener("click", openTagsModal);
   document.getElementById("btnCloseTags").addEventListener("click", closeTagsModal);
   document.getElementById("btnDoneTags").addEventListener("click", closeTagsModal);
+}
+
+// ============================================================================
+// RENOMBRADO DE ARCHIVOS (se aplica en disco; la extensión no se toca)
+// ============================================================================
+
+function splitName(nombre) {
+  const i = nombre.lastIndexOf(".");
+  return i > 0 ? [nombre.slice(0, i), nombre.slice(i)] : [nombre, ""];
+}
+
+/** Sustituye el contenido de `host` por un campo de edición del nombre (sin extensión). */
+function startRename(docId, host) {
+  if (state.renaming || !host) return;
+  const it = state.items.find((x) => x.id === docId);
+  const nombre = (it && it.nombre) || (state.selectedDoc && state.selectedDoc.id === docId && state.selectedDoc.nombre);
+  if (!nombre) return;
+  const [base, ext] = splitName(nombre);
+  state.renaming = true;
+  const original = host.innerHTML;
+  host.innerHTML = `<span class="rename-box"><input type="text" class="rename-input" spellcheck="false" /><span class="rename-ext">${escapeHtml(ext)}</span></span>`;
+  const inp = host.querySelector(".rename-input");
+  inp.value = base;
+  inp.focus();
+  inp.select();
+
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const nuevo = inp.value.trim();
+    if (!save || !nuevo || nuevo === base) {
+      host.innerHTML = original;
+      state.renaming = false;
+      return;
+    }
+    inp.disabled = true;
+    const ok = await renameDoc(docId, nuevo, base);
+    state.renaming = false;
+    if (!ok) host.innerHTML = original;
+  };
+  inp.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      finish(true);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      finish(false);
+    }
+  });
+  inp.addEventListener("blur", () => finish(true));
+  ["click", "dblclick", "mousedown"].forEach((ev) => inp.addEventListener(ev, (e) => e.stopPropagation()));
+}
+
+/** Llama al servidor; si va bien, refleja el cambio en pantalla y ofrece deshacer. */
+async function renameDoc(docId, nuevaBase, baseAnterior, esDeshacer = false) {
+  try {
+    const r = await apiPost(`/api/doc/${docId}/renombrar`, { nombre: nuevaBase });
+    applyRenamed(r.doc);
+    if (r.cambiado) {
+      if (esDeshacer) showToast(`Nombre restaurado: «${r.nombre}».`, 3000);
+      else
+        showToast(`Renombrado a «${r.nombre}».`, 7000, {
+          label: "Deshacer",
+          fn: () => renameDoc(docId, baseAnterior, nuevaBase, true),
+        });
+    }
+    return true;
+  } catch (err) {
+    showToast(err.message, 6000);
+    return false;
+  }
+}
+
+function applyRenamed(doc) {
+  if (!doc) return;
+  const it = state.items.find((x) => x.id === doc.id);
+  if (it) {
+    it.nombre = doc.nombre;
+    it.ruta_rel = doc.ruta_rel;
+  }
+  renderGridRows();
+  if (state.selectedDoc && state.selectedDoc.id === doc.id) {
+    Object.assign(state.selectedDoc, doc);
+    document.getElementById("prevTitle").textContent = doc.nombre;
+    document.getElementById("prevSubtitle").textContent = [
+      `Modificado ${formatDateFromEpoch(doc.mtime)}`,
+      `${doc.num_paginas} pág.`,
+      doc.ruta_rel,
+    ].join("  ·  ");
+    if (state.activeTab === "text") updatePreviewPane();
+  }
+}
+
+// ============================================================================
+// ELIMINACIÓN (a la Papelera de reciclaje de Windows, con confirmación)
+// ============================================================================
+
+function deleteModalOpen() {
+  return document.getElementById("deleteModal").style.display !== "none";
+}
+
+function openDeleteModal() {
+  const doc = state.selectedDoc;
+  if (!doc || doc.id !== state.selectedDocId) return;
+  closeTagPopover();
+  document.getElementById("deleteName").textContent = doc.nombre;
+  document.getElementById("deletePath").textContent = doc.ruta_display || doc.ruta_rel;
+  document.getElementById("deleteTags").innerHTML = tagPillsHtml(doc.etiquetas);
+  const btn = document.getElementById("btnConfirmDelete");
+  btn.disabled = false;
+  document.getElementById("deleteModal").style.display = "flex";
+  document.getElementById("btnCancelDelete").focus(); // por defecto, lo seguro
+}
+
+function closeDeleteModal() {
+  document.getElementById("deleteModal").style.display = "none";
+}
+
+async function confirmDelete() {
+  const doc = state.selectedDoc;
+  if (!doc) return closeDeleteModal();
+  const btn = document.getElementById("btnConfirmDelete");
+  btn.disabled = true;
+  try {
+    const r = await apiPost(`/api/doc/${doc.id}/eliminar`, {});
+    closeDeleteModal();
+    // Quitarlo de la lista y pasar al siguiente
+    const idx = state.items.findIndex((x) => x.id === doc.id);
+    if (idx >= 0) state.items.splice(idx, 1);
+    state.checked.delete(doc.id);
+    state.total_count = Math.max(0, state.total_count - 1);
+    updateCounters();
+    state.selectedDoc = null;
+    state.selectedDocId = null;
+    renderGridRows();
+    updateBulkUI();
+    if (state.items.length) {
+      selectDocument(state.items[Math.min(Math.max(idx, 0), state.items.length - 1)].id, true);
+    } else {
+      document.getElementById("previewToolbar").style.display = "none";
+      document.getElementById("prevTags").style.display = "none";
+      document.getElementById("prevTitle").textContent = "No hay más documentos en los resultados";
+      document.getElementById("prevSubtitle").textContent = "";
+    }
+    showToast(`«${r.nombre}» enviado a la Papelera de reciclaje.`, 5000);
+    loadInfo();
+    loadEtiquetas();
+  } catch (err) {
+    btn.disabled = false;
+    showToast(err.message, 7000);
+  }
 }

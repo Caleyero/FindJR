@@ -44,6 +44,20 @@ Etiquetas manuales con color: las pone siempre el usuario, nunca el programa.
   Se vinculan por la ruta del archivo dentro de la Biblioteca: si se mueve o renombra, pierde sus etiquetas.
 - El Excel exportado incluye la columna «Etiquetas» y «Unir resultados en 1 PDF» respeta los filtros.
 
+## Renombrar documentos
+
+Doble clic en el nombre (en Resultados o en la previsualización), **F2** o el botón del lápiz.
+Intro guarda, Esc cancela; la extensión no se toca. El archivo se renombra **en disco** y el índice y
+las etiquetas se actualizan al momento (sin releer el PDF). Tras renombrar aparece «Deshacer».
+Si el archivo está abierto en otro programa, Windows no deja renombrarlo: hay que cerrarlo antes.
+
+## Eliminar documentos
+
+Botón de la papelera en la previsualización o tecla **Supr**, con confirmación (Cancelar es la opción
+por defecto). El archivo va a la **Papelera de reciclaje** de Windows y sale del índice. Si se restaura
+desde la Papelera, la siguiente sincronización lo vuelve a indexar con sus etiquetas. En unidades de red
+(sin Papelera) no se permite.
+
 ## Arquitectura
 
 ```

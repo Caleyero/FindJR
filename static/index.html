@@ -103,6 +103,17 @@
     <symbol id="ico-folder-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/>
     </symbol>
+    <symbol id="ico-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 6h18"/>
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+      <line x1="10" x2="10" y1="11" y2="17"/>
+      <line x1="14" x2="14" y1="11" y2="17"/>
+    </symbol>
+    <symbol id="ico-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+      <path d="m15 5 4 4"/>
+    </symbol>
     <symbol id="ico-tag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12.59 2.59A2 2 0 0 0 11.17 2H4a2 2 0 0 0-2 2v7.17a2 2 0 0 0 .59 1.42l8.7 8.7a2.43 2.43 0 0 0 3.42 0l6.58-6.58a2.43 2.43 0 0 0 0-3.42z"/>
       <circle cx="7.5" cy="7.5" r="1.2"/>
@@ -297,7 +308,7 @@
       <div class="preview-header" id="previewHeader">
         <div class="preview-title-block">
           <span class="preview-badge" id="prevCategoria">Selecciona un documento</span>
-          <h3 id="prevTitle">Haz clic en cualquier fila del listado para previsualizar el documento</h3>
+          <h3 id="prevTitle" title="">Haz clic en cualquier fila del listado para previsualizar el documento</h3>
           <p id="prevSubtitle" class="preview-meta">Puedes usar las teclas ↑ y ↓ del teclado para recorrer los resultados rápidamente.</p>
           <div class="prev-tags" id="prevTags" style="display: none;"></div>
         </div>
@@ -322,8 +333,14 @@
             <a class="btn btn-sm btn-outline" id="btnOpenNewTab" href="#" target="_blank" title="Abrir en una pestaña nueva">
               <svg class="icon"><use href="#ico-external-link"></use></svg> Abrir
             </a>
+            <button class="btn btn-sm btn-outline" id="btnRename" title="Renombrar el archivo (F2 o doble clic en el nombre)" aria-label="Renombrar">
+              <svg class="icon"><use href="#ico-pencil"></use></svg>
+            </button>
             <button class="btn btn-sm btn-outline" id="btnOpenFolder" title="Mostrar el archivo en el Explorador de Windows">
               <svg class="icon"><use href="#ico-folder-open"></use></svg> Carpeta
+            </button>
+            <button class="btn btn-sm btn-outline btn-delete" id="btnDelete" title="Eliminar el archivo: va a la Papelera de reciclaje (Supr)" aria-label="Eliminar">
+              <svg class="icon"><use href="#ico-trash"></use></svg>
             </button>
           </div>
         </div>
@@ -410,6 +427,30 @@
         </button>
         <button class="btn btn-outline" id="btnCancelPrefs">Cancelar</button>
         <button class="btn btn-primary" id="btnSavePrefs"><svg class="icon"><use href="#ico-save"></use></svg> Guardar y sincronizar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONFIRMACIÓN DE ELIMINACIÓN -->
+  <div class="modal-backdrop" id="deleteModal" style="display: none;">
+    <div class="modal-dialog modal-small">
+      <div class="modal-header">
+        <h3 class="modal-title"><svg class="icon"><use href="#ico-trash"></use></svg> Eliminar documento</h3>
+        <button class="modal-close" id="btnCloseDelete">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="delete-q">¿Enviar este archivo a la Papelera de reciclaje?</p>
+        <div class="delete-file">
+          <strong id="deleteName"></strong>
+          <span id="deletePath"></span>
+          <div id="deleteTags"></div>
+        </div>
+        <small class="form-help">Desaparece de la carpeta y de FinderJR. Se puede recuperar desde la Papelera de Windows:
+          al restaurarlo, FinderJR lo vuelve a indexar con sus etiquetas.</small>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="btnCancelDelete">Cancelar</button>
+        <button class="btn btn-danger" id="btnConfirmDelete"><svg class="icon"><use href="#ico-trash"></use></svg> Enviar a la Papelera</button>
       </div>
     </div>
   </div>

@@ -538,6 +538,15 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/etiquetar":
                 return self.send_json(etiquetar(payload))
 
+            m = re.match(r"^/api/doc/(\d+)/eliminar$", route)
+            if m:
+                return self.send_json(indexador.eliminar(int(m.group(1))))
+
+            m = re.match(r"^/api/doc/(\d+)/renombrar$", route)
+            if m:
+                res = indexador.renombrar(int(m.group(1)), str(payload.get("nombre", "")))
+                return self.send_json(dict(res, doc=get_doc(int(m.group(1)))))
+
             if route == "/api/layout":
                 cfg = load_config()
                 lay = cfg.get("ui_layout", {})

@@ -10,11 +10,14 @@ Ciclo de sincronización:
 import concurrent.futures as cf
 import datetime
 import os
+import re
+import subprocess
 import threading
 import time
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import etiquetas
 from .config import excluded_dirs, load_config, to_display_path, to_local_path
 from .db import get_conn, init_db, meta_set
 from .extraccion import extract_pdf_text
@@ -193,6 +196,161 @@ def sync(force_reindex: bool = False) -> Dict[str, Any]:
         return res
     finally:
         _set_state(activo=False, fase="inactivo", mensaje="")
+        _SYNC_LOCK.release()
+
+
+# ------------------------------------------------------------------------------
+# Renombrado de archivos
+# ------------------------------------------------------------------------------
+
+_CARACTERES_PROHIBIDOS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_RESERVADOS = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
+
+
+def validar_nombre(base: str) -> str:
+    """Nombre sin extensión válido en Windows; lanza ValueError con un mensaje para el usuario."""
+    base = (base or "").strip().rstrip(". ")
+    if not base:
+        raise ValueError("El nombre no puede estar vacío.")
+    m = _CARACTERES_PROHIBIDOS.search(base)
+    if m:
+        car = m.group(0) if m.group(0).isprintable() else "de control"
+        raise ValueError(f"El nombre no puede contener el carácter {car} (prohibidos: \\ / : * ? \" < > |).")
+    if base.split(".")[0].upper() in _RESERVADOS:
+        raise ValueError(f"«{base}» es un nombre reservado de Windows.")
+    if len(base) > 200:
+        raise ValueError("El nombre es demasiado largo (máximo 200 caracteres).")
+    return base
+
+
+def renombrar(doc_id: int, nueva_base: str) -> Dict[str, Any]:
+    """Renombra en disco el archivo de un documento (conservando la extensión) y actualiza el índice
+    y las etiquetas sin volver a extraer el texto. Devuelve el nombre anterior y el nuevo.
+    Solo se impide repetir nombre en la misma carpeta (en carpetas distintas es legítimo)."""
+    nueva_base = validar_nombre(nueva_base)
+    if not _SYNC_LOCK.acquire(timeout=5):
+        raise ValueError("Hay una sincronización en curso. Inténtalo de nuevo en cuanto termine.")
+    try:
+        conn = get_conn()
+        try:
+            r = conn.execute(
+                """SELECT a.id, a.ruta, a.ruta_rel, a.nombre FROM documentos d
+                   JOIN archivos a ON a.id = d.archivo_id WHERE d.id = ?""", (doc_id,)).fetchone()
+            if not r:
+                raise ValueError("Documento no encontrado.")
+            viejo, nombre_viejo = r["ruta"], r["nombre"]
+            ext = os.path.splitext(nombre_viejo)[1]
+            nombre_nuevo = nueva_base + ext
+            if nombre_nuevo == nombre_viejo:
+                return {"anterior": nombre_viejo, "nombre": nombre_viejo, "cambiado": False}
+            if not os.path.exists(viejo):
+                raise ValueError("El archivo ya no está en su ruta (¿se ha movido o borrado?). Sincroniza la Biblioteca.")
+            nuevo = os.path.join(os.path.dirname(viejo), nombre_nuevo)
+            solo_mayusculas = os.path.normcase(nuevo) == os.path.normcase(viejo) or nombre_nuevo.lower() == nombre_viejo.lower()
+            if os.path.exists(nuevo) and not solo_mayusculas:
+                raise ValueError(f"Ya existe un archivo llamado «{nombre_nuevo}» en esa misma carpeta.")
+            if len(to_display_path(nuevo)) > 259:
+                raise ValueError("La ruta completa superaría el límite de Windows (260 caracteres). Acorta el nombre.")
+            try:
+                os.rename(viejo, nuevo)
+            except PermissionError:
+                raise ValueError("Windows no permite renombrarlo: el archivo está abierto en otro programa "
+                                 "(visor PDF, correo…) o no hay permisos. Ciérralo e inténtalo de nuevo.") from None
+            except OSError as e:
+                raise ValueError(f"No se ha podido renombrar: {e.strerror or e}") from None
+
+            rel_viejo = r["ruta_rel"]
+            rel_nuevo = rel_viejo[: len(rel_viejo) - len(nombre_viejo)] + nombre_nuevo
+            try:
+                with conn:
+                    conn.execute("UPDATE archivos SET ruta = ?, ruta_rel = ?, nombre = ? WHERE id = ?",
+                                 (nuevo, rel_nuevo, nombre_nuevo, r["id"]))
+                    # El trigger documentos_au actualiza el índice de texto completo (nombre y ruta)
+                    conn.execute("UPDATE documentos SET nombre = ?, ruta_rel = ? WHERE archivo_id = ?",
+                                 (nombre_nuevo, rel_nuevo, r["id"]))
+                    conn.execute(f"UPDATE OR REPLACE {etiquetas.ALIAS}.doc_etiqueta SET ruta_rel = ? WHERE ruta_rel = ?",
+                                 (etiquetas.clave(rel_nuevo), etiquetas.clave(rel_viejo)))
+            except Exception:
+                os.rename(nuevo, viejo)  # el índice no se ha podido actualizar: se deja todo como estaba
+                raise
+            return {"anterior": nombre_viejo, "nombre": nombre_nuevo, "cambiado": True}
+        finally:
+            conn.close()
+    finally:
+        _SYNC_LOCK.release()
+
+
+# ------------------------------------------------------------------------------
+# Eliminación (a la Papelera de reciclaje)
+# ------------------------------------------------------------------------------
+
+def _a_papelera_windows(path: str) -> None:
+    """Envía un archivo a la Papelera con SHFileOperationW (shell32), sin dependencias."""
+    import ctypes
+    from ctypes import wintypes
+
+    path = os.path.abspath(path)
+    raiz = os.path.splitdrive(path)[0] + "\\"
+    # Las unidades de red y las rutas UNC no tienen Papelera: Windows borraría definitivamente
+    if path.startswith("\\\\") or ctypes.windll.kernel32.GetDriveTypeW(raiz) == 4:  # DRIVE_REMOTE
+        raise ValueError("El archivo está en una unidad de red, que no tiene Papelera de reciclaje. "
+                         "Elimínalo desde el Explorador si de verdad quieres borrarlo.")
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR),
+                    ("pTo", wintypes.LPCWSTR), ("fFlags", ctypes.c_uint16), ("fAnyOperationsAborted", wintypes.BOOL),
+                    ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", wintypes.LPCWSTR)]
+
+    FO_DELETE, FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 3, 0x4, 0x10, 0x40, 0x400
+    op = SHFILEOPSTRUCTW(None, FO_DELETE, path + "\0", None,  # pFrom termina en doble nulo
+                         FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI, False, None, None)
+    rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    if rc != 0 or op.fAnyOperationsAborted:
+        raise OSError(f"SHFileOperation código {rc}")
+
+
+def _a_papelera_wsl(path: str) -> None:
+    """Desarrollo en WSL: la Papelera de Windows a través de PowerShell."""
+    win = to_display_path(path).replace("'", "''")
+    cmd = ("Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile("
+           f"'{win}', 'OnlyErrorDialogs', 'SendToRecycleBin')")
+    r = subprocess.run(["powershell.exe", "-NoProfile", "-Command", cmd], capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise OSError((r.stderr or r.stdout or "").strip()[:300])
+
+
+def eliminar(doc_id: int) -> Dict[str, Any]:
+    """Envía el archivo de un documento a la Papelera de reciclaje y lo quita del índice.
+
+    Las etiquetas se conservan en etiquetas.db: si el archivo se restaura desde la Papelera, la
+    siguiente sincronización lo vuelve a indexar y recupera sus etiquetas."""
+    if not _SYNC_LOCK.acquire(timeout=5):
+        raise ValueError("Hay una sincronización en curso. Inténtalo de nuevo en cuanto termine.")
+    try:
+        conn = get_conn()
+        try:
+            r = conn.execute(
+                """SELECT a.id, a.ruta, a.nombre FROM documentos d
+                   JOIN archivos a ON a.id = d.archivo_id WHERE d.id = ?""", (doc_id,)).fetchone()
+            if not r:
+                raise ValueError("Documento no encontrado.")
+            if os.path.exists(r["ruta"]):
+                try:
+                    (_a_papelera_windows if os.name == "nt" else _a_papelera_wsl)(r["ruta"])
+                except ValueError:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    raise ValueError("Windows no ha podido enviarlo a la Papelera: puede que el archivo esté abierto "
+                                     f"en otro programa o que no haya permisos. Ciérralo e inténtalo de nuevo. ({e})") from None
+                if os.path.exists(r["ruta"]):
+                    raise ValueError("El archivo sigue en su sitio: Windows no ha podido eliminarlo.")
+            # (si ya no existía en disco, solo se quita del índice)
+            with conn:
+                conn.execute("DELETE FROM archivos WHERE id = ?", (r["id"],))  # documentos y FTS en cascada
+            return {"status": "ok", "nombre": r["nombre"], "ruta_display": to_display_path(r["ruta"])}
+        finally:
+            conn.close()
+    finally:
         _SYNC_LOCK.release()
 
 
