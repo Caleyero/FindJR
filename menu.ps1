@@ -20,9 +20,12 @@ function Confirm-Action {
 }
 
 function Get-RemoteUrl {
-    $url = git remote get-url origin 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not $url) { return $null }
-    return $url
+    # 'git config --get' no escribe en stderr si la clave no existe. Con
+    # ErrorActionPreference=Stop, cualquier salida de git por stderr redirigida
+    # (p. ej. "No such remote 'origin'") abortaria el menu.
+    $url = git config --get remote.origin.url
+    if (-not $url) { return $null }
+    return $url.Trim()
 }
 
 function Show-Header {
