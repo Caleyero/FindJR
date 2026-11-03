@@ -68,6 +68,13 @@ function Show-Menu {
     Show-Item "9" "Prueba de la API"         "python tools\probar_api.py - busquedas de ejemplo"
 
     Write-Host ""
+    Write-Host "  SEGUNDO PLANO (favorito http://localhost:8766/)" -ForegroundColor Cyan
+    Show-Item "10" "Activar arranque automatico" "arranca FinderJR al entrar en Windows, sin apagarse"
+    Show-Item "11" "Quitar arranque automatico"  "lo quita del Inicio y detiene FinderJR"
+    Show-Item "12" "Estado segundo plano"        "instalado / respondiendo"
+    Show-Item "13" "Reiniciar FinderJR"          "detiene y vuelve a arrancar (tras actualizar codigo)"
+
+    Write-Host ""
     Write-Host "   Q)  Salir" -ForegroundColor DarkGray
     Write-Host ""
 }
@@ -126,10 +133,14 @@ while ($true) {
         '^(6)$'  { $cmd = { python -m pip install -r "$PSScriptRoot\requirements.txt" } }
         '^(7)$'  { $cmd = { python -m finder.indexador } }
         '^(8)$'  {
-            $needsConfirm = "Esto vacia el indice y vuelve a leer TODOS los documentos de la Biblioteca (unos minutos). Cierra FinderJR antes si esta abierto."
+            $needsConfirm = "Esto vacia el indice y vuelve a leer TODOS los documentos de la Biblioteca (unos minutos). Cierra FinderJR antes si esta abierto (en segundo plano: opcion 13 al terminar, o detenlo antes)."
             $cmd = { python -m finder.indexador --full }
         }
         '^(9)$'  { $cmd = { python "$PSScriptRoot\tools\probar_api.py" } }
+        '^(10)$' { $cmd = { & "$PSScriptRoot\arranque_automatico.ps1" -Accion Instalar } }
+        '^(11)$' { $cmd = { & "$PSScriptRoot\arranque_automatico.ps1" -Accion Quitar } }
+        '^(12)$' { $cmd = { & "$PSScriptRoot\arranque_automatico.ps1" -Accion Estado } }
+        '^(13)$' { $cmd = { & "$PSScriptRoot\arranque_automatico.ps1" -Accion Detener; & "$PSScriptRoot\arranque_automatico.ps1" -Accion Iniciar } }
         '^(q|0|exit|salir)$' { exit 0 }
         default {
             Write-Host "  Opcion no reconocida." -ForegroundColor Yellow

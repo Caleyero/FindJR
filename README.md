@@ -11,6 +11,7 @@ resultados contiene literalmente lo buscado.
 
 - **Windows (doble clic)**: `iniciar_finderjr.bat` (sin consola). Abre el navegador y, mientras haya
   una pestaña abierta, sincroniza la Biblioteca cada `sync_interval_min` minutos (10 por defecto).
+- **Favorito en el navegador (recomendado)**: `menu.bat` → opción 10, o `arranque_automatico.ps1 -Accion Instalar`. Crea un acceso directo en la carpeta Inicio de Windows que arranca FinderJR en segundo plano al iniciar sesión (sin navegador y sin apagarse al cerrar la pestaña). Desde entonces basta con el favorito `http://localhost:8766/`. Tras actualizar el código: opción 13 (reiniciar). `-Accion Quitar|Iniciar|Detener|Estado` para el resto.
 - **Terminal**: `python app_finder.py` (`--no-browser`, `--no-auto-shutdown`).
 - **Solo indexar**: `python -m finder.indexador` (`--full` reindexa todo desde cero).
 - **Prueba de humo de la API**: `python tools/probar_api.py`.
