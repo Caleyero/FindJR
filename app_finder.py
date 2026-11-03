@@ -35,7 +35,7 @@ if sys.stderr is None:
 
 import fitz  # PyMuPDF
 
-from finder import indexador
+from finder import etiquetas, indexador
 from finder.config import BASE_DIR, load_config, save_config, to_display_path
 from finder.db import get_conn, init_db, meta_get
 from finder.extraccion import SEPARADOR_PAGINA
@@ -139,7 +139,7 @@ def parse_search(params: Dict[str, str]) -> Dict[str, Any]:
     }
 
 
-def build_where(ps: Dict[str, Any]) -> Tuple[str, List[Any]]:
+def build_where(ps: Dict[str, Any], params: Dict[str, str]) -> Tuple[str, List[Any]]:
     clauses, sp = ["1=1"], []
     if ps["match"]:
         clauses.append("d.id IN (SELECT rowid FROM documentos_fts WHERE documentos_fts MATCH ?)")
@@ -147,7 +147,8 @@ def build_where(ps: Dict[str, Any]) -> Tuple[str, List[Any]]:
     if ps["exclude"]:
         clauses.append("d.id NOT IN (SELECT rowid FROM documentos_fts WHERE documentos_fts MATCH ?)")
         sp.append(ps["exclude"])
-    return " AND ".join(clauses), sp
+    et_clauses, et_sp = etiquetas.filtros_sql(params)
+    return " AND ".join(clauses + et_clauses), sp + et_sp
 
 
 def run_query(params: Dict[str, str], limit: int, offset: int, cols: str) -> Tuple[int, List[Any], Dict[str, Any]]:
@@ -162,6 +163,10 @@ def run_query(params: Dict[str, str], limit: int, offset: int, cols: str) -> Tup
             if ps["exclude"]:
                 sql_from += " AND d.id NOT IN (SELECT rowid FROM documentos_fts WHERE documentos_fts MATCH ?)"
                 sp.append(ps["exclude"])
+            et_clauses, et_sp = etiquetas.filtros_sql(params)
+            for c in et_clauses:
+                sql_from += " AND " + c
+            sp += et_sp
             total = conn.execute(f"SELECT COUNT(*) {sql_from}", sp).fetchone()[0]
             rows = conn.execute(f"SELECT {cols} {sql_from} ORDER BY {BM25} LIMIT ? OFFSET ?", sp + [limit, offset]).fetchall()
         else:
@@ -170,7 +175,7 @@ def run_query(params: Dict[str, str], limit: int, offset: int, cols: str) -> Tup
                 "file_asc": "d.nombre ASC",
                 "file_desc": "d.nombre DESC",
             }.get(sort_by, "d.mtime DESC, d.id DESC")
-            where, sp = build_where(ps)
+            where, sp = build_where(ps, params)
             total = conn.execute(f"SELECT COUNT(*) FROM documentos d WHERE {where}", sp).fetchone()[0]
             rows = conn.execute(f"SELECT {cols} FROM documentos d WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
                                 sp + [limit, offset]).fetchall()
@@ -216,6 +221,14 @@ def query_documents(params: Dict[str, str]) -> Dict[str, Any]:
         it = dict(r)
         it["snippet"] = make_snippet(it.pop("texto") or "", ps["terms"])
         items.append(it)
+    if items:
+        conn = get_conn()
+        try:
+            por_ruta = etiquetas.de_rutas(conn, [it["ruta_rel"] for it in items])
+        finally:
+            conn.close()
+        for it in items:
+            it["etiquetas"] = por_ruta.get(it["ruta_rel"], [])
     return {"total_count": total, "limit": limit, "offset": offset, "terms": ps["terms"], "items": items}
 
 
@@ -242,6 +255,11 @@ def get_doc(doc_id: int) -> Optional[Dict[str, Any]]:
         return None
     d = dict(r)
     d["ruta_display"] = to_display_path(d["ruta"])
+    conn = get_conn()
+    try:
+        d["etiquetas"] = etiquetas.de_rutas(conn, [d["ruta_rel"]])[d["ruta_rel"]]
+    finally:
+        conn.close()
     return d
 
 
@@ -262,12 +280,20 @@ def render_page_png(doc: Dict[str, Any], rel_page: int, terms: List[str]) -> byt
 
 def csv_export(params: Dict[str, str]) -> bytes:
     _, rows, _ = run_query(params, 100000, 0, "d.id, d.mtime, d.nombre, d.ruta_rel, d.carpeta, d.num_paginas, d.sin_texto")
+    conn = get_conn()
+    try:
+        nombres = {e["id"]: e["nombre"] for e in etiquetas.listar(conn)["items"]}
+        por_ruta = etiquetas.de_rutas(conn, [r["ruta_rel"] for r in rows])
+    finally:
+        conn.close()
     out = io.StringIO()
     w = csv.writer(out, delimiter=";")
-    w.writerow(["ID", "Fecha_modificacion", "Archivo", "Ruta", "Carpeta", "Paginas", "Sin_texto"])
+    w.writerow(["ID", "Fecha_modificacion", "Archivo", "Ruta", "Carpeta", "Paginas", "Sin_texto", "Etiquetas"])
     for r in rows:
         fecha = datetime.datetime.fromtimestamp(r["mtime"]).strftime("%d/%m/%Y") if r["mtime"] else ""
-        w.writerow([r["id"], fecha, r["nombre"], r["ruta_rel"], r["carpeta"], r["num_paginas"], "SÍ" if r["sin_texto"] else ""])
+        ets = ", ".join(sorted((nombres[i] for i in por_ruta.get(r["ruta_rel"], []) if i in nombres), key=str.lower))
+        w.writerow([r["id"], fecha, r["nombre"], r["ruta_rel"], r["carpeta"], r["num_paginas"],
+                    "SÍ" if r["sin_texto"] else "", ets])
     return out.getvalue().encode("utf-8-sig")
 
 
@@ -293,6 +319,38 @@ def pdf_bundle(params: Dict[str, str], max_docs: int = 300) -> bytes:
         return out.tobytes(garbage=1, deflate=True)
     finally:
         out.close()
+
+
+def etiquetas_listar() -> Dict[str, Any]:
+    conn = get_conn()
+    try:
+        return etiquetas.listar(conn)
+    finally:
+        conn.close()
+
+
+def etiquetar(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Pone o quita una etiqueta a una lista de documentos o a todos los resultados de una búsqueda."""
+    etiqueta_id = int(payload.get("etiqueta_id") or 0)
+    poner = payload.get("accion", "poner") != "quitar"
+    if isinstance(payload.get("busqueda"), dict):
+        params = {k: str(v) for k, v in payload["busqueda"].items()}
+        _, rows, _ = run_query(params, 100000, 0, "d.ruta_rel")
+        rutas = [r["ruta_rel"] for r in rows]
+    else:
+        ids = [int(x) for x in payload.get("doc_ids") or [] if str(x).isdigit()]
+        conn = get_conn()
+        try:
+            rutas = [r[0] for r in conn.execute(
+                f"SELECT ruta_rel FROM documentos WHERE id IN ({','.join('?' * len(ids)) or 'NULL'})", ids)]
+        finally:
+            conn.close()
+    conn = get_conn()
+    try:
+        cambiados = etiquetas.asignar(conn, etiqueta_id, rutas, poner)
+    finally:
+        conn.close()
+    return {"status": "ok", "documentos": len(rutas), "cambiados": cambiados}
 
 
 def open_location(path: str) -> None:
@@ -370,6 +428,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(indexador.get_state())
             if route == "/api/config":
                 return self.send_json({"config": load_config(), "folder": indexador.folder_info()})
+            if route == "/api/etiquetas":
+                return self.send_json(etiquetas_listar())
 
             m = re.match(r"^/api/doc/(\d+)(/pdf|/page_image)?$", route)
             if m:
@@ -455,6 +515,29 @@ class Handler(BaseHTTPRequestHandler):
                 open_location(doc["ruta"])
                 return self.send_json({"status": "ok"})
 
+            if route == "/api/etiquetas":
+                conn = get_conn()
+                try:
+                    et = etiquetas.crear(conn, str(payload.get("nombre", "")), payload.get("color"))
+                finally:
+                    conn.close()
+                return self.send_json(et)
+
+            m = re.match(r"^/api/etiquetas/(\d+)(/borrar)?$", route)
+            if m:
+                conn = get_conn()
+                try:
+                    if m.group(2):
+                        etiquetas.borrar(conn, int(m.group(1)))
+                    else:
+                        etiquetas.modificar(conn, int(m.group(1)), payload)
+                finally:
+                    conn.close()
+                return self.send_json({"status": "ok"})
+
+            if route == "/api/etiquetar":
+                return self.send_json(etiquetar(payload))
+
             if route == "/api/layout":
                 cfg = load_config()
                 lay = cfg.get("ui_layout", {})
@@ -490,6 +573,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"status": "ok", "started": started})
 
             self.send_json({"error": "Endpoint POST no válido"}, status=404)
+        except ValueError as e:
+            self.send_json({"error": str(e)}, status=400)
         except Exception as e:  # noqa: BLE001
             traceback.print_exc()
             self.send_json({"error": str(e)}, status=500)

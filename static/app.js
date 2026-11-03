@@ -22,6 +22,15 @@ const state = {
   currentDocPage: 1,
   zoomPercent: 100,
   wasIndexing: false,
+  // Etiquetas manuales
+  etiquetas: [],
+  etMap: {},
+  sinEtiquetar: 0,
+  filtroEt: new Set(), // deben llevar todas estas
+  filtroEtx: new Set(), // no deben llevar ninguna de estas
+  sinEt: false, // solo documentos sin ninguna etiqueta
+  checked: new Set(), // documentos marcados con la casilla
+  lastCheckIdx: null,
 };
 
 let searchDebounceTimer = null;
@@ -93,9 +102,21 @@ function hasSearch() {
   return SEARCH_KEYS.some((k) => state[k].trim());
 }
 
+function searchParamsObject() {
+  const o = {};
+  SEARCH_KEYS.forEach((k) => state[k].trim() && (o[k] = state[k].trim()));
+  if (state.filtroEt.size) o.et = [...state.filtroEt].join(",");
+  if (state.filtroEtx.size) o.etx = [...state.filtroEtx].join(",");
+  if (state.sinEt) o.sin_et = "1";
+  return o;
+}
+
+function hasTagFilter() {
+  return state.filtroEt.size > 0 || state.filtroEtx.size > 0 || state.sinEt;
+}
+
 function buildQueryParams() {
-  const p = new URLSearchParams();
-  SEARCH_KEYS.forEach((k) => state[k].trim() && p.set(k, state[k].trim()));
+  const p = new URLSearchParams(searchParamsObject());
   p.set("sort_by", state.sort_by);
   p.set("limit", String(state.limit));
   p.set("offset", String(state.offset));
@@ -127,8 +148,10 @@ async function loadInfo() {
   }
 }
 
-async function runSearch(resetOffset = true) {
+async function runSearch(resetOffset = true, opts = {}) {
   if (resetOffset) state.offset = 0;
+  if (resetOffset && !opts.keepChecks) state.checked.clear();
+  const prevIdx = state.items.findIndex((it) => it.id === state.selectedDocId);
   const tbody = document.getElementById("resultsTbody");
   try {
     const res = await fetch(`/api/search?${buildQueryParams().toString()}`);
@@ -145,15 +168,26 @@ async function runSearch(resetOffset = true) {
     document.getElementById("btnPrevPage").disabled = state.offset <= 0;
     document.getElementById("btnNextPage").disabled = state.offset + state.limit >= state.total_count;
 
+    // Los marcados que ya no aparecen dejan de estarlo
+    const visibles = new Set(state.items.map((it) => it.id));
+    [...state.checked].forEach((id) => !visibles.has(id) && state.checked.delete(id));
+
     renderGridRows();
-    if (state.items.length > 0 && !state.items.find((it) => it.id === state.selectedDocId)) {
-      selectDocument(state.items[0].id, false);
+    updateBulkUI();
+    const actual = state.items.find((it) => it.id === state.selectedDocId);
+    if (state.items.length > 0 && !actual) {
+      // Si el documento sale de los resultados (p. ej. al etiquetarlo con un filtro activo), pasar al siguiente
+      const idx = opts.keepPreview && prevIdx >= 0 ? Math.min(prevIdx, state.items.length - 1) : 0;
+      selectDocument(state.items[idx].id, !!opts.keepPreview);
+    } else if (actual && opts.keepPreview) {
+      if (state.selectedDoc) state.selectedDoc.etiquetas = actual.etiquetas || [];
+      renderPreviewTags();
     } else if (state.selectedDoc && state.activeTab !== "pdf") {
       updatePreviewPane();
     }
   } catch (err) {
     console.error("Error en búsqueda:", err);
-    tbody.innerHTML = `<tr><td colspan="3" class="empty-cell">Error en la búsqueda: ${escapeHtml(err.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="empty-cell">Error en la búsqueda: ${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
@@ -161,7 +195,7 @@ function renderGridRows() {
   const tbody = document.getElementById("resultsTbody");
   if (!state.items.length) {
     tbody.innerHTML = `
-      <tr><td colspan="3" class="empty-cell">
+      <tr><td colspan="4" class="empty-cell">
         No hay documentos que cumplan la búsqueda.<br/>
         <small>Prueba con menos palabras, con el comienzo de una palabra o revisa el campo «No contiene».</small>
       </td></tr>`;
@@ -175,14 +209,17 @@ function renderGridRows() {
       const ocr = it.sin_texto ? `<span class="ocr-badge" title="Escaneado sin capa de texto: solo se encuentra por nombre y carpeta">OCR</span>` : "";
       const snippet = it.snippet ? `<div class="snippet-match">${highlightText(it.snippet, terms)}</div>` : "";
       const dir = it.ruta_rel.replace(/[\\/][^\\/]*$/, "");
+      const chk = state.checked.has(it.id);
       return `
-        <tr data-id="${it.id}" class="${sel}">
+        <tr data-id="${it.id}" class="${sel} ${chk ? "checked" : ""}">
+          <td class="cell-check"><input type="checkbox" class="row-check" ${chk ? "checked" : ""} /></td>
           <td>
             <div class="date-cell">${formatDateFromEpoch(it.mtime)}</div>
             <span class="date-sub">${pags}</span>${ocr}
           </td>
           <td>
             <div class="doc-name">${highlightText(it.nombre, terms)}</div>
+            ${tagPillsHtml(it.etiquetas)}
             ${hasSearch() ? snippet : ""}
           </td>
           <td>
@@ -191,8 +228,18 @@ function renderGridRows() {
         </tr>`;
     })
     .join("");
-  tbody.querySelectorAll("tr[data-id]").forEach((tr) => {
-    tr.addEventListener("click", () => selectDocument(parseInt(tr.dataset.id, 10), false));
+  tbody.querySelectorAll("tr[data-id]").forEach((tr, idx) => {
+    tr.addEventListener("click", (e) => {
+      const id = parseInt(tr.dataset.id, 10);
+      if (e.target.closest(".cell-check")) {
+        e.stopPropagation();
+        toggleCheck(idx, e.target.classList.contains("row-check") ? e.target.checked : !state.checked.has(id), e.shiftKey);
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) return toggleCheck(idx, !state.checked.has(id), false);
+      if (e.shiftKey && state.lastCheckIdx !== null) return toggleCheck(idx, true, true);
+      selectDocument(id, false);
+    });
   });
 }
 
@@ -222,6 +269,7 @@ async function selectDocument(docId, scrollIntoView = true) {
       `${doc.num_paginas} pág.`,
       doc.ruta_rel,
     ].join("  ·  ");
+    renderPreviewTags();
     document.getElementById("previewToolbar").style.display = "flex";
     document.getElementById("previewPlaceholder").style.display = "none";
     document.getElementById("btnDownloadSinglePdf").href = `/api/doc/${doc.id}/pdf?download=1`;
@@ -478,6 +526,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       inp.value = "";
       state[inp.dataset.key] = "";
     });
+    state.filtroEt.clear();
+    state.filtroEtx.clear();
+    state.sinEt = false;
+    renderTagFilters();
     runSearch(true);
     document.getElementById("qTodas").focus();
   });
@@ -558,9 +610,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!r.ok) showToast("No se ha podido abrir la carpeta del documento.");
   });
 
-  // Teclado ↑ / ↓
+  // Teclado: ↑ / ↓ recorre, 1-9 pone/quita etiquetas, Esc cierra el menú o desmarca
   document.addEventListener("keydown", (e) => {
-    if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
+    if (e.key === "Escape") {
+      if (tagPopoverOpen()) return closeTagPopover();
+      if (document.getElementById("tagsModal").style.display !== "none") return closeTagsModal();
+      if (state.checked.size && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return clearChecks();
+    }
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName) && document.activeElement.type !== "checkbox") return;
+    if (/^[1-9]$/.test(e.key) && !e.ctrlKey && !e.altKey && !e.metaKey && !tagPopoverOpen()) {
+      e.preventDefault();
+      return toggleTagByKey(parseInt(e.key, 10));
+    }
     if (!state.items.length || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
     e.preventDefault();
     const idx = state.items.findIndex((it) => it.id === state.selectedDocId);
@@ -721,8 +782,413 @@ document.addEventListener("DOMContentLoaded", async () => {
     window.addEventListener("beforeunload", bye);
   })();
 
+  initTagsUI();
   await loadInfo();
+  await loadEtiquetas();
   await runSearch(true);
   pollStatus();
   document.getElementById("qTodas").focus();
 });
+
+// ============================================================================
+// ETIQUETAS (manuales: el programa nunca etiqueta por su cuenta)
+// ============================================================================
+
+async function apiPost(url, payload) {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload || {}) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) throw new Error(data.error || `Error ${res.status}`);
+  return data;
+}
+
+async function loadEtiquetas() {
+  try {
+    const data = await (await fetch("/api/etiquetas")).json();
+    state.etiquetas = data.items || [];
+    state.sinEtiquetar = data.sin_etiquetar || 0;
+    state.paleta = data.paleta || [];
+    state.etMap = Object.fromEntries(state.etiquetas.map((t) => [t.id, t]));
+    // Filtros de etiquetas que ya no existen
+    [state.filtroEt, state.filtroEtx].forEach((set) => [...set].forEach((id) => !state.etMap[id] && set.delete(id)));
+    renderTagFilters();
+    if (tagPopoverOpen()) renderTagPopover();
+  } catch (err) {
+    console.error("Error cargando etiquetas:", err);
+  }
+}
+
+function sortedTagIds(ids) {
+  return (ids || []).filter((id) => state.etMap[id]).sort((a, b) => state.etMap[a].nombre.localeCompare(state.etMap[b].nombre, "es"));
+}
+
+function tagPill(t, extra = "") {
+  return `<span class="tag-pill" style="--tag:${t.color}" data-tag-id="${t.id}">${escapeHtml(t.nombre)}${extra}</span>`;
+}
+
+function tagPillsHtml(ids) {
+  const list = sortedTagIds(ids);
+  return list.length ? `<div class="row-tags">${list.map((id) => tagPill(state.etMap[id])).join("")}</div>` : "";
+}
+
+// ---- Filtros en el panel izquierdo ----
+
+function renderTagFilters() {
+  const c = document.getElementById("tagFilterList");
+  if (!c) return;
+  const chips = state.etiquetas.map((t) => {
+    const cls = state.filtroEt.has(t.id) ? "on" : state.filtroEtx.has(t.id) ? "off" : "";
+    const ayuda = cls === "on" ? "Mostrando solo los que la llevan" : cls === "off" ? "Ocultando los que la llevan" : "Clic: ver solo estos · Ctrl+clic: ocultarlos";
+    const tecla = t.tecla ? ` · Tecla ${t.tecla}: poner/quitar` : "";
+    return `<button type="button" class="tag-chip ${cls}" style="--tag:${t.color}" data-id="${t.id}" title="${ayuda}${tecla}">
+              <span class="dot ${t.tecla ? "dot-key" : ""}">${t.tecla || ""}</span>${escapeHtml(t.nombre)}<span class="count">${fmtNum(t.total)}</span></button>`;
+  });
+  chips.push(`<button type="button" class="tag-chip tag-chip-none ${state.sinEt ? "on" : ""}" data-id="none" title="Documentos sin ninguna etiqueta (útil para ir clasificando)">
+                Sin etiquetar<span class="count">${fmtNum(state.sinEtiquetar)}</span></button>`);
+  c.innerHTML = state.etiquetas.length
+    ? chips.join("")
+    : `<div class="tags-empty">Aún no hay etiquetas. Crea la primera aquí debajo o desde el botón «Etiquetar».</div>`;
+  c.querySelectorAll(".tag-chip").forEach((b) =>
+    b.addEventListener("click", (e) => {
+      if (b.dataset.id === "none") {
+        state.sinEt = !state.sinEt;
+      } else {
+        const id = parseInt(b.dataset.id, 10);
+        const excluir = e.ctrlKey || e.metaKey;
+        if (excluir) {
+          state.filtroEt.delete(id);
+          state.filtroEtx.has(id) ? state.filtroEtx.delete(id) : state.filtroEtx.add(id);
+        } else {
+          state.filtroEtx.delete(id);
+          state.filtroEt.has(id) ? state.filtroEt.delete(id) : state.filtroEt.add(id);
+        }
+      }
+      renderTagFilters();
+      runSearch(true);
+    })
+  );
+}
+
+async function createTag(nombre) {
+  nombre = (nombre || "").trim();
+  if (!nombre) return null;
+  try {
+    const t = await apiPost("/api/etiquetas", { nombre });
+    await loadEtiquetas();
+    return t;
+  } catch (err) {
+    showToast("No se ha podido crear la etiqueta: " + err.message);
+    return null;
+  }
+}
+
+// ---- Marcado de documentos (casillas) ----
+
+function toggleCheck(idx, on, range) {
+  const ids = state.items.map((it) => it.id);
+  const from = range && state.lastCheckIdx !== null ? Math.min(state.lastCheckIdx, idx) : idx;
+  const to = range && state.lastCheckIdx !== null ? Math.max(state.lastCheckIdx, idx) : idx;
+  for (let i = from; i <= to; i++) on ? state.checked.add(ids[i]) : state.checked.delete(ids[i]);
+  state.lastCheckIdx = idx;
+  syncChecksDom();
+}
+
+function clearChecks() {
+  state.checked.clear();
+  state.lastCheckIdx = null;
+  syncChecksDom();
+}
+
+function syncChecksDom() {
+  document.querySelectorAll("#resultsTbody tr[data-id]").forEach((tr) => {
+    const on = state.checked.has(parseInt(tr.dataset.id, 10));
+    tr.classList.toggle("checked", on);
+    const cb = tr.querySelector(".row-check");
+    if (cb) cb.checked = on;
+  });
+  updateBulkUI();
+}
+
+function updateBulkUI() {
+  const n = state.checked.size;
+  document.getElementById("bulkInfo").style.display = n ? "flex" : "none";
+  document.getElementById("bulkInfoText").textContent = `${fmtNum(n)} marcado${n === 1 ? "" : "s"}`;
+  document.getElementById("btnTagMenuText").textContent = n ? `Etiquetar marcados` : `Etiquetar resultados`;
+  const all = document.getElementById("chkAll");
+  all.checked = n > 0 && state.items.length > 0 && state.items.every((it) => state.checked.has(it.id));
+  all.indeterminate = n > 0 && !all.checked;
+}
+
+// ---- Aplicar etiquetas ----
+
+/** Destino de una acción: documentos marcados, documento actual o todos los resultados. */
+function currentTarget(kind) {
+  if (kind === "doc") return state.selectedDocId ? { doc_ids: [state.selectedDocId], n: 1, label: "este documento" } : null;
+  if (state.checked.size) return { doc_ids: [...state.checked], n: state.checked.size, label: `${fmtNum(state.checked.size)} marcados` };
+  return { busqueda: searchParamsObject(), n: state.total_count, label: `los ${fmtNum(state.total_count)} resultados` };
+}
+
+function tagsOfDoc(id) {
+  if (state.selectedDoc && state.selectedDoc.id === id) return state.selectedDoc.etiquetas || [];
+  const it = state.items.find((x) => x.id === id);
+  return (it && it.etiquetas) || [];
+}
+
+/** ¿Llevan la etiqueta todos los documentos del destino? (null si no se puede saber: búsqueda completa) */
+function targetHasTag(target, tagId) {
+  if (!target.doc_ids) return null;
+  return target.doc_ids.every((id) => tagsOfDoc(id).includes(tagId));
+}
+
+async function applyTag(tagId, poner, target) {
+  const t = state.etMap[tagId];
+  if (!t || !target || !target.n) return;
+  if (target.busqueda && poner && target.n > 25 &&
+      !confirm(`¿Poner la etiqueta «${t.nombre}» a los ${fmtNum(target.n)} documentos de la búsqueda actual?`)) return;
+  if (target.busqueda && !poner &&
+      !confirm(`¿Quitar la etiqueta «${t.nombre}» a los ${fmtNum(target.n)} documentos de la búsqueda actual?`)) return;
+  try {
+    const payload = { etiqueta_id: tagId, accion: poner ? "poner" : "quitar" };
+    if (target.busqueda) payload.busqueda = target.busqueda;
+    else payload.doc_ids = target.doc_ids;
+    const r = await apiPost("/api/etiquetar", payload);
+    // Actualización inmediata en pantalla
+    const ids = target.doc_ids || state.items.map((it) => it.id);
+    ids.forEach((id) => {
+      [state.items.find((x) => x.id === id), state.selectedDoc && state.selectedDoc.id === id ? state.selectedDoc : null].forEach((o) => {
+        if (!o) return;
+        const set = new Set(o.etiquetas || []);
+        poner ? set.add(tagId) : set.delete(tagId);
+        o.etiquetas = [...set];
+      });
+    });
+    const quien = target.n === 1 ? "1 documento" : `${fmtNum(target.n)} documentos`;
+    showToast(`«${t.nombre}» ${poner ? "puesta a" : "quitada de"} ${quien}${r.cambiados !== target.n ? ` (${fmtNum(r.cambiados)} cambiados)` : ""}.`, 2600);
+    await loadEtiquetas();
+    if (hasTagFilter()) {
+      await runSearch(false, { keepPreview: true, keepChecks: true });
+    } else {
+      renderGridRows();
+      renderPreviewTags();
+    }
+    if (tagPopoverOpen()) renderTagPopover();
+  } catch (err) {
+    showToast("No se ha podido etiquetar: " + err.message);
+  }
+}
+
+function toggleTagByKey(n) {
+  const t = state.etiquetas.find((x) => x.tecla === n);
+  if (!t) return showToast(`No hay ninguna etiqueta asignada a la tecla ${n} (se asigna en «Gestionar»).`, 2600);
+  const target = state.checked.size ? currentTarget("bulk") : currentTarget("doc");
+  if (!target) return;
+  applyTag(t.id, !targetHasTag(target, t.id), target);
+}
+
+// ---- Etiquetas del documento en la previsualización ----
+
+function renderPreviewTags() {
+  const c = document.getElementById("prevTags");
+  const doc = state.selectedDoc;
+  if (!doc) return (c.style.display = "none");
+  c.style.display = "flex";
+  c.innerHTML =
+    sortedTagIds(doc.etiquetas).map((id) => tagPill(state.etMap[id], `<button type="button" class="tag-x" title="Quitar etiqueta">&times;</button>`)).join("") +
+    `<button type="button" class="tag-add" id="btnPrevAddTag" title="Poner o quitar etiquetas a este documento (o usa las teclas 1-9)">+ Etiqueta</button>`;
+  c.querySelectorAll(".tag-x").forEach((x) =>
+    x.addEventListener("click", () => applyTag(parseInt(x.parentElement.dataset.tagId, 10), false, currentTarget("doc")))
+  );
+  document.getElementById("btnPrevAddTag").addEventListener("click", (e) => openTagPopover("doc", e.currentTarget));
+}
+
+// ---- Menú emergente (poner/quitar, buscar y crear) ----
+
+const popover = { kind: null, anchor: null };
+
+function tagPopoverOpen() {
+  return document.getElementById("tagPopover").style.display !== "none";
+}
+
+function openTagPopover(kind, anchor) {
+  popover.kind = kind;
+  popover.anchor = anchor;
+  const el = document.getElementById("tagPopover");
+  el.style.display = "flex";
+  const r = anchor.getBoundingClientRect();
+  const w = el.offsetWidth;
+  el.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.left))}px`;
+  const top = r.bottom + 4;
+  el.style.top = `${Math.min(top, window.innerHeight - el.offsetHeight - 8)}px`;
+  const inp = document.getElementById("tagPopoverInput");
+  inp.value = "";
+  renderTagPopover();
+  inp.focus();
+}
+
+function closeTagPopover() {
+  document.getElementById("tagPopover").style.display = "none";
+}
+
+function renderTagPopover() {
+  const target = currentTarget(popover.kind);
+  const list = document.getElementById("tagPopoverList");
+  if (!target || !target.n) {
+    document.getElementById("tagPopoverTitle").textContent = "No hay documentos a los que aplicar etiquetas";
+    list.innerHTML = "";
+    return;
+  }
+  document.getElementById("tagPopoverTitle").textContent = `Etiquetas de ${target.label}`;
+  const q = document.getElementById("tagPopoverInput").value.trim();
+  const qf = q.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  const tags = state.etiquetas.filter((t) => !qf || t.nombre.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().includes(qf));
+  const exact = state.etiquetas.some((t) => t.nombre.toLowerCase() === q.toLowerCase());
+  let html = tags
+    .map((t) => {
+      const has = targetHasTag(target, t.id);
+      const key = t.tecla ? `<kbd>${t.tecla}</kbd>` : "";
+      if (has !== null) {
+        // Documentos concretos: casilla que alterna
+        return `<button type="button" class="tp-row tp-toggle ${has ? "on" : ""}" data-id="${t.id}" data-poner="${has ? 0 : 1}">
+                  <span class="tp-check">${has ? "✓" : ""}</span>${tagPill(t)}${key}</button>`;
+      }
+      // Búsqueda completa: poner o quitar explícitamente
+      return `<div class="tp-row">${tagPill(t)}${key}
+                <span class="tp-actions">
+                  <button type="button" class="btn btn-xs" data-id="${t.id}" data-poner="1">Poner</button>
+                  <button type="button" class="btn btn-xs" data-id="${t.id}" data-poner="0">Quitar</button>
+                </span></div>`;
+    })
+    .join("");
+  if (q && !exact) html += `<button type="button" class="tp-row tp-create" data-create="1">+ Crear y poner «${escapeHtml(q)}»</button>`;
+  if (!html) html = `<div class="tags-empty">Escribe un nombre para crear la primera etiqueta.</div>`;
+  list.innerHTML = html;
+  list.querySelectorAll("[data-poner]").forEach((b) =>
+    b.addEventListener("click", () => applyTag(parseInt(b.dataset.id, 10), b.dataset.poner === "1", currentTarget(popover.kind)))
+  );
+  const cr = list.querySelector("[data-create]");
+  if (cr) cr.addEventListener("click", createFromPopover);
+}
+
+async function createFromPopover() {
+  const inp = document.getElementById("tagPopoverInput");
+  const t = await createTag(inp.value);
+  if (!t) return;
+  inp.value = "";
+  await applyTag(t.id, true, currentTarget(popover.kind));
+  renderTagPopover();
+}
+
+// ---- Gestor (renombrar, color, tecla, borrar) ----
+
+function openTagsModal() {
+  renderTagsManage();
+  document.getElementById("tagsModal").style.display = "flex";
+}
+
+function closeTagsModal() {
+  document.getElementById("tagsModal").style.display = "none";
+}
+
+function renderTagsManage() {
+  const c = document.getElementById("tagsManageList");
+  if (!state.etiquetas.length) {
+    c.innerHTML = `<div class="tags-empty">Aún no hay etiquetas.</div>`;
+    return;
+  }
+  const paleta = state.paleta || [];
+  c.innerHTML = state.etiquetas
+    .map(
+      (t) => `
+      <div class="tm-row" data-id="${t.id}">
+        <input type="text" class="tm-name" maxlength="40" value="${escapeHtml(t.nombre)}" />
+        <div class="tm-colors">${paleta
+          .map((col) => `<button type="button" class="tm-color ${col === t.color ? "on" : ""}" style="--tag:${col}" data-color="${col}" title="Cambiar color"></button>`)
+          .join("")}</div>
+        <select class="tm-key" title="Tecla rápida">
+          <option value="">Tecla —</option>
+          ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<option value="${n}" ${t.tecla === n ? "selected" : ""}>Tecla ${n}</option>`).join("")}
+        </select>
+        <span class="tm-count" title="Documentos con esta etiqueta">${fmtNum(t.total)} doc.</span>
+        <button type="button" class="catalog-remove-btn tm-del" title="Borrar etiqueta">&times;</button>
+      </div>`
+    )
+    .join("");
+  c.querySelectorAll(".tm-row").forEach((row) => {
+    const id = parseInt(row.dataset.id, 10);
+    const t = state.etMap[id];
+    const save = async (datos) => {
+      try {
+        await apiPost(`/api/etiquetas/${id}`, datos);
+      } catch (err) {
+        showToast(err.message);
+      }
+      await loadEtiquetas();
+      renderTagsManage();
+      renderGridRows();
+      renderPreviewTags();
+    };
+    const name = row.querySelector(".tm-name");
+    name.addEventListener("change", () => name.value.trim() && name.value.trim() !== t.nombre && save({ nombre: name.value.trim() }));
+    name.addEventListener("keydown", (e) => e.key === "Enter" && name.blur());
+    row.querySelectorAll(".tm-color").forEach((b) => b.addEventListener("click", () => save({ color: b.dataset.color })));
+    row.querySelector(".tm-key").addEventListener("change", (e) => save({ tecla: e.target.value }));
+    row.querySelector(".tm-del").addEventListener("click", async () => {
+      const aviso = t.total ? `La llevan ${fmtNum(t.total)} documentos; se quitará de todos.` : "No la lleva ningún documento.";
+      if (!confirm(`¿Borrar la etiqueta «${t.nombre}»?\n${aviso}`)) return;
+      try {
+        await apiPost(`/api/etiquetas/${id}/borrar`, {});
+      } catch (err) {
+        return showToast(err.message);
+      }
+      state.filtroEt.delete(id);
+      state.filtroEtx.delete(id);
+      await loadEtiquetas();
+      renderTagsManage();
+      runSearch(false, { keepPreview: true, keepChecks: true });
+    });
+  });
+}
+
+function initTagsUI() {
+  const newInp = document.getElementById("newTagInput");
+  const crear = async () => {
+    if (await createTag(newInp.value)) {
+      newInp.value = "";
+      showToast("Etiqueta creada. Ponla con el botón «Etiquetar», con «+ Etiqueta» o con su tecla.", 3200);
+    }
+  };
+  document.getElementById("btnNewTag").addEventListener("click", crear);
+  newInp.addEventListener("keydown", (e) => e.key === "Enter" && (e.preventDefault(), crear()));
+
+  document.getElementById("btnTagMenu").addEventListener("click", (e) => {
+    e.stopPropagation();
+    tagPopoverOpen() && popover.kind === "bulk" ? closeTagPopover() : openTagPopover("bulk", e.currentTarget);
+  });
+  document.getElementById("tagPopoverInput").addEventListener("input", renderTagPopover);
+  document.getElementById("tagPopoverInput").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const q = e.target.value.trim().toLowerCase();
+    if (!q) return;
+    const t = state.etiquetas.find((x) => x.nombre.toLowerCase() === q);
+    if (!t) return createFromPopover();
+    const target = currentTarget(popover.kind);
+    const has = targetHasTag(target, t.id);
+    applyTag(t.id, has === null ? true : !has, target);
+    e.target.value = "";
+  });
+  document.addEventListener("mousedown", (e) => {
+    if (!tagPopoverOpen()) return;
+    if (e.target.closest("#tagPopover") || e.target.closest("#btnTagMenu") || e.target.closest("#btnPrevAddTag")) return;
+    closeTagPopover();
+  });
+
+  document.getElementById("chkAll").addEventListener("change", (e) => {
+    state.items.forEach((it) => (e.target.checked ? state.checked.add(it.id) : state.checked.delete(it.id)));
+    syncChecksDom();
+  });
+  document.getElementById("btnClearChecks").addEventListener("click", clearChecks);
+
+  document.getElementById("btnManageTags").addEventListener("click", openTagsModal);
+  document.getElementById("btnCloseTags").addEventListener("click", closeTagsModal);
+  document.getElementById("btnDoneTags").addEventListener("click", closeTagsModal);
+}

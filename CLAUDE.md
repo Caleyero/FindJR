@@ -18,6 +18,9 @@ Se usa solo en el PC del usuario, con un favorito a `http://localhost:8766/`.
    «Santander Seguros Generales») y eso restaba confianza a todo lo demás. Principio rector: *lo que
    aparece en resultados contiene literalmente lo buscado*. No proponer de nuevo listboxes de entidades,
    tipos de documento, fechas «adivinadas» del texto ni lectura de dbGes.
+   - **Etiquetas manuales (noviembre 2026, a petición del usuario):** compatibles con el principio
+     porque las pone siempre el usuario. Nunca sugerir ni asignar etiquetas automáticamente.
+     Planas (sin grupos) y de un solo puesto (sin sincronización entre equipos).
    - Restos de esa etapa: `db._migrate_v1` (migración v1→v2 del índice) y el descarte de la clave
      obsoleta `dbges_sources` en `config.load_config`. Se pueden mantener; no hacen daño.
 2. **Interfaz replicada de cBank** (`C:\Users\ofici\Documents\Python\cBank`): tres paneles
@@ -39,6 +42,7 @@ finder/config.py       finder_config.json (por puesto, en .gitignore) y conversi
 finder/db.py           Esquema SQLite (data/finder_index.db), FTS5, migraciones por PRAGMA user_version
 finder/extraccion.py   Texto con PyMuPDF (máx. max_pages_text páginas y 400.000 caracteres)
 finder/indexador.py    Sincronización incremental en paralelo + bucle en segundo plano
+finder/etiquetas.py    Etiquetas manuales (etiquetas.db, adjunta como «et» en cada conexión)
 static/                index.html, app.js, styles.css (estilo cBank)
 tools/probar_api.py    Prueba de humo contra el servidor en marcha
 ```
@@ -52,6 +56,16 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
   `unicode61 remove_diacritics 2`, mantenida por triggers. Si se cambia el esquema, subir
   `SCHEMA_VERSION` y escribir la migración en `init_db` (versiones desconocidas se borran y se reindexa).
 - `sin_texto`/`necesita_ocr` = texto extraído < 60 caracteres (escaneados, ~1.100 PDF).
+
+### Etiquetas (`finder/etiquetas.py`)
+- Base de datos **aparte** (`etiquetas.db` en la raíz; `FINDERJR_ETIQUETAS_DB` la cambia para pruebas)
+  porque `data/` se regenera. `get_conn` la adjunta con `ATTACH ... AS et`; `init_db` crea su esquema.
+- Tablas `et.etiquetas` (nombre único sin mayúsculas, color de `PALETA`, `tecla` 1-9 única opcional) y
+  `et.doc_etiqueta` (`ruta_rel`, `etiqueta_id`). La clave es `ruta_rel` con `/` (`CLAVE_DOC` normaliza
+  la del índice), así sobrevive a reindexar y a modificar el archivo; mover/renombrar la deja huérfana.
+- Filtros de búsqueda: `et=1,2` (todas), `etx=3` (ninguna), `sin_et=1`; los aplica `filtros_sql` en las
+  dos ramas de `run_query`, así que CSV y `pdf_bundle` los respetan.
+- Pendiente opcional: fusionar etiquetas; reenganchar etiquetas huérfanas tras mover archivos (hash).
 
 ### Indexación (`finder/indexador.py`)
 - Detección de cambios por ruta + tamaño + mtime (tolerancia 1 s). Archivo modificado = borrar e insertar.
@@ -76,9 +90,11 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
 
 ### API
 GET `/api/info`, `/api/search`, `/api/status`, `/api/config`, `/api/doc/<id>[/pdf|/page_image]`,
-`/api/export/csv`, `/api/export/pdf_bundle` (une hasta 300 PDF filtrados).
+`/api/export/csv`, `/api/export/pdf_bundle` (une hasta 300 PDF filtrados), `/api/etiquetas` (con recuentos).
 POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en el archivo),
-`/api/layout` (guarda anchos de paneles en `finder_config.json`), `/api/config`.
+`/api/layout` (guarda anchos de paneles en `finder_config.json`), `/api/config`,
+`/api/etiquetas` (crear), `/api/etiquetas/<id>` (nombre/color/tecla), `/api/etiquetas/<id>/borrar`,
+`/api/etiquetar` (`etiqueta_id`, `accion` poner|quitar, `doc_ids` o `busqueda`).
 
 ### Ciclo de vida del proceso
 - Por defecto (`iniciar_finderjr.bat` con doble clic) abre el navegador y **se apaga solo** al cerrar la
@@ -96,10 +112,13 @@ POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en 
   (`/mnt/c/Users/ofici/...`). `config.to_local_path` convierte `C:\...` ⇄ `/mnt/c/...`; las rutas
   guardadas en el índice son las del intérprete que indexó. **No mezclar** un índice creado desde WSL con
   el servidor de Windows (o viceversa) sin reindexar.
-- Para probar contra el índice real desde WSL sin interferir con la instancia de Windows, conviene usar
-  otro puerto (`FINDERJR_PORT=8767 python3 app_finder.py --no-browser`).
-- El MCP de puppeteer para capturas de pantalla no ha funcionado hasta ahora: la UI se valida vía API y
-  pidiendo al usuario que la revise en el navegador. Decirlo explícitamente cuando no se haya visto.
+- **No arrancar `app_finder.py` desde WSL sobre el índice real**: `background_loop` sincroniza al
+  arrancar y reescribe el índice con rutas de WSL (y, sin PyMuPDF, deja todo en ERROR; pasó en noviembre
+  de 2026). Para probar, levantar solo `FinderHTTPServer` sin el bucle (como `tools/probar_api.py`),
+  a ser posible sobre una copia del índice y con `FINDERJR_ETIQUETAS_DB` apuntando a un archivo temporal.
+- Capturas de pantalla: el MCP de puppeteer y el Chromium de Playwright en WSL no funcionan (faltan
+  bibliotecas). Sí funciona el Chrome de Windows en headless con `--remote-debugging-port=9333`
+  (WSL en red espejo ve `127.0.0.1`) + `playwright-core` (`chromium.connectOverCDP`).
 - No existen tests automatizados. `tools/probar_api.py` es la prueba de humo: levanta su propio servidor
   en el puerto 8798 sobre el índice real y lanza búsquedas de ejemplo.
 
@@ -115,7 +134,8 @@ POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en 
 - Finales de línea definidos en `.gitattributes` (`.bat`, `.ps1`, `.vbs` en CRLF).
 - Git: `menu.bat` (estado, bajar, subir, vincular). Remoto: `https://github.com/Caleyero/FindJR.git`.
   `subir.bat` hace add + commit + push, sin versionado ni changelog (a diferencia de CVS-Web).
-- Fuera del repo (`.gitignore`): `data/` (índice, ~180 MB, se regenera) y `finder_config.json` (por puesto).
+- Fuera del repo (`.gitignore`): `data/` (índice, ~180 MB, se regenera), `finder_config.json` (por puesto)
+  y `etiquetas.db` (trabajo manual del usuario: **no** se regenera, debe ir en las copias de seguridad).
 
 ## Proyectos relacionados (misma carpeta `Documents\Python`)
 

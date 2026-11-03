@@ -103,6 +103,10 @@
     <symbol id="ico-folder-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/>
     </symbol>
+    <symbol id="ico-tag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12.59 2.59A2 2 0 0 0 11.17 2H4a2 2 0 0 0-2 2v7.17a2 2 0 0 0 .59 1.42l8.7 8.7a2.43 2.43 0 0 0 3.42 0l6.58-6.58a2.43 2.43 0 0 0 0-3.42z"/>
+      <circle cx="7.5" cy="7.5" r="1.2"/>
+    </symbol>
     <symbol id="ico-database" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <ellipse cx="12" cy="5" rx="9" ry="3"/>
       <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
@@ -194,6 +198,23 @@
           </div>
         </form>
 
+        <!-- ETIQUETAS (manuales: las pone siempre el usuario) -->
+        <div class="tags-section">
+          <div class="tags-header">
+            <label><svg class="icon icon-label"><use href="#ico-tag"></use></svg> Etiquetas</label>
+            <button type="button" class="btn-link" id="btnManageTags" title="Renombrar, cambiar color o tecla, borrar">Gestionar</button>
+          </div>
+          <div class="tags-filter-list" id="tagFilterList"></div>
+          <div class="tags-new-row">
+            <input type="text" id="newTagInput" maxlength="40" placeholder="Nueva etiqueta…" autocomplete="off" />
+            <button type="button" class="btn btn-sm btn-xs" id="btnNewTag" title="Crear etiqueta">+ Crear</button>
+          </div>
+          <small class="filter-hint">
+            Clic: ver solo los que la llevan · <b>Ctrl+clic</b>: ocultarlos.<br />
+            Teclas <b>1-9</b>: poner/quitar al documento actual (o a los marcados).
+          </small>
+        </div>
+
         <div class="search-help">
           <strong>Cómo busca</strong>
           <ul>
@@ -217,6 +238,13 @@
           <span class="kpi-label">Documentos encontrados</span>
           <strong class="kpi-value" id="kpiTotalDocs">0</strong>
         </div>
+        <div class="bulk-info" id="bulkInfo" style="display: none;">
+          <span id="bulkInfoText">0 marcados</span>
+          <button type="button" class="bulk-clear" id="btnClearChecks" title="Desmarcar todos (Esc)">&times;</button>
+        </div>
+        <button type="button" class="btn btn-sm btn-tag-menu" id="btnTagMenu" title="Poner o quitar etiquetas a los documentos marcados o a todos los resultados">
+          <svg class="icon"><use href="#ico-tag"></use></svg> <span id="btnTagMenuText">Etiquetar resultados</span> ▾
+        </button>
         <div class="kpi-group-sort">
           <label for="sortSelect">Ordenar:</label>
           <select id="sortSelect">
@@ -233,6 +261,7 @@
         <table class="results-table">
           <thead>
             <tr>
+              <th class="col-check" title="Marcar todos los de esta página"><input type="checkbox" id="chkAll" /></th>
               <th class="col-fecha sortable-th" data-sort-col="fecha" title="Fecha de modificación del archivo. Clic para ordenar">
                 <span class="th-content">Fecha <span class="sort-indicator"></span></span>
                 <span class="col-resizer" data-col="col_fecha_px" title="Arrastra para cambiar el ancho (doble clic restaura)"></span>
@@ -247,7 +276,7 @@
             </tr>
           </thead>
           <tbody id="resultsTbody">
-            <tr><td colspan="3" class="empty-cell">Cargando documentos...</td></tr>
+            <tr><td colspan="4" class="empty-cell">Cargando documentos...</td></tr>
           </tbody>
         </table>
       </div>
@@ -270,6 +299,7 @@
           <span class="preview-badge" id="prevCategoria">Selecciona un documento</span>
           <h3 id="prevTitle">Haz clic en cualquier fila del listado para previsualizar el documento</h3>
           <p id="prevSubtitle" class="preview-meta">Puedes usar las teclas ↑ y ↓ del teclado para recorrer los resultados rápidamente.</p>
+          <div class="prev-tags" id="prevTags" style="display: none;"></div>
         </div>
 
         <div class="preview-toolbar" id="previewToolbar" style="display: none;">
@@ -380,6 +410,30 @@
         </button>
         <button class="btn btn-outline" id="btnCancelPrefs">Cancelar</button>
         <button class="btn btn-primary" id="btnSavePrefs"><svg class="icon"><use href="#ico-save"></use></svg> Guardar y sincronizar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MENÚ EMERGENTE DE ETIQUETAS -->
+  <div class="tag-popover" id="tagPopover" style="display: none;">
+    <div class="tag-popover-title" id="tagPopoverTitle">Etiquetas</div>
+    <input type="text" id="tagPopoverInput" maxlength="40" placeholder="Buscar o crear etiqueta…" autocomplete="off" />
+    <div class="tag-popover-list" id="tagPopoverList"></div>
+  </div>
+
+  <!-- MODAL GESTIÓN DE ETIQUETAS -->
+  <div class="modal-backdrop" id="tagsModal" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title"><svg class="icon"><use href="#ico-tag"></use></svg> Gestionar etiquetas</h3>
+        <button class="modal-close" id="btnCloseTags">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="tags-manage-list" id="tagsManageList"></div>
+        <small class="form-help">Los cambios se guardan al momento. Las etiquetas se guardan en <code>etiquetas.db</code>, en la carpeta del programa: conviene incluirla en las copias de seguridad.</small>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnDoneTags">Hecho</button>
       </div>
     </div>
   </div>

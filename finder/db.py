@@ -6,6 +6,7 @@ Esquema del índice de FinderJR (data/finder_index.db): archivos, documentos y s
 
 import sqlite3
 
+from . import etiquetas
 from .config import INDEX_DB_PATH, ensure_data_dir
 
 SCHEMA_VERSION = 2
@@ -77,6 +78,7 @@ def get_conn() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
+    etiquetas.attach(conn)  # etiquetas.db (manuales, fuera del índice regenerable) como «et»
     return conn
 
 
@@ -123,6 +125,7 @@ def init_db() -> None:
     with conn:
         conn.executescript(_SCHEMA)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
+    etiquetas.init_schema(conn)
     conn.close()
 
 
