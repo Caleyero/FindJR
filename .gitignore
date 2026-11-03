@@ -1,0 +1,15 @@
+# Indice y datos locales (se regeneran indexando la Biblioteca)
+data/
+
+# Configuracion local de cada puesto (ruta de la Biblioteca, anchos de paneles...)
+finder_config.json
+finder_config.json.tmp
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Capturas y temporales
+captura*.jpg
+*.tmp

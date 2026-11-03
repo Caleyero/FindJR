@@ -1,0 +1,25 @@
+# Normalizar line endings: LF en el repo, en checkout se respeta el SO
+* text=auto eol=lf
+
+# Scripts que deben conservar su EOL original
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+*.vbs   text eol=crlf
+*.sh    text eol=lf
+
+# Binarios (no tocar)
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.pdf   binary
+*.zip   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.db    binary
+*.sqlite binary

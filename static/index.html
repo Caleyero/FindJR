@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FinderJR · Biblioteca documental</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231e3a8a'/%3E%3Cg fill='none' stroke='%23ffffff' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' transform='translate(4,4)'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h6.5'/%3E%3Cpolyline points='14 2 14 8 20 8'/%3E%3Cline x1='8' y1='11' x2='13' y2='11'/%3E%3Cline x1='8' y1='15' x2='11.5' y2='15'/%3E%3Ccircle cx='17.2' cy='16.8' r='3.2'/%3E%3Cline x1='19.6' y1='19.2' x2='21.8' y2='21.4'/%3E%3C/g%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+    <symbol id="ico-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+      <path d="M3 3v5h5"/>
+      <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+      <path d="M16 16h5v5"/>
+    </symbol>
+    <symbol id="ico-table" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect width="18" height="18" x="3" y="3" rx="2"/>
+      <path d="M3 9h18"/>
+      <path d="M3 15h18"/>
+      <path d="M9 3v18"/>
+    </symbol>
+    <symbol id="ico-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+      <polyline points="2 17 12 22 22 17"/>
+      <polyline points="2 12 12 17 22 12"/>
+    </symbol>
+    <symbol id="ico-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </symbol>
+    <symbol id="ico-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="8"/>
+      <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </symbol>
+    <symbol id="ico-building" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect width="16" height="20" x="4" y="2" rx="2"/>
+      <path d="M9 22v-4h6v4"/>
+      <path d="M8 6h.01"/><path d="M16 6h.01"/><path d="M12 6h.01"/>
+      <path d="M12 10h.01"/><path d="M12 14h.01"/><path d="M16 10h.01"/>
+      <path d="M16 14h.01"/><path d="M8 10h.01"/><path d="M8 14h.01"/>
+    </symbol>
+    <symbol id="ico-landmark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="3" x2="21" y1="22" y2="22"/>
+      <line x1="6" x2="6" y1="18" y2="11"/>
+      <line x1="10" x2="10" y1="18" y2="11"/>
+      <line x1="14" x2="14" y1="18" y2="11"/>
+      <line x1="18" x2="18" y1="18" y2="11"/>
+      <polygon points="12 2 20 7 4 7"/>
+    </symbol>
+    <symbol id="ico-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+    </symbol>
+    <symbol id="ico-credit-card" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect width="20" height="14" x="2" y="5" rx="2"/>
+      <line x1="2" x2="22" y1="10" y2="10"/>
+    </symbol>
+    <symbol id="ico-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect width="18" height="18" x="3" y="4" rx="2"/>
+      <line x1="16" x2="16" y1="2" y2="6"/>
+      <line x1="8" x2="8" y1="2" y2="6"/>
+      <line x1="3" x2="21" y1="10" y2="10"/>
+    </symbol>
+    <symbol id="ico-file-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+      <polyline points="14 2 14 8 20 8"/>
+      <line x1="16" x2="8" y1="13" y2="13"/>
+      <line x1="16" x2="8" y1="17" y2="17"/>
+      <line x1="10" x2="8" y1="9" y2="9"/>
+    </symbol>
+    <symbol id="ico-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+      <polyline points="7 10 12 15 17 10"/>
+      <line x1="12" x2="12" y1="15" y2="3"/>
+    </symbol>
+    <symbol id="ico-external-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+      <polyline points="15 3 21 3 21 9"/>
+      <line x1="10" x2="21" y1="14" y2="3"/>
+    </symbol>
+    <symbol id="ico-align-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="21" x2="3" y1="6" y2="6"/>
+      <line x1="15" x2="3" y1="12" y2="12"/>
+      <line x1="17" x2="3" y1="18" y2="18"/>
+    </symbol>
+    <symbol id="ico-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+      <polyline points="17 21 17 13 7 13 7 21"/>
+      <polyline points="7 3 7 8 15 8"/>
+    </symbol>
+    <symbol id="ico-x-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="15" y1="9" x2="9" y2="15"/>
+      <line x1="9" y1="9" x2="15" y2="15"/>
+    </symbol>
+    <symbol id="ico-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+      <circle cx="9" cy="7" r="4"/>
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+    </symbol>
+    <symbol id="ico-folder-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/>
+    </symbol>
+    <symbol id="ico-database" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <ellipse cx="12" cy="5" rx="9" ry="3"/>
+      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+      <path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/>
+    </symbol>
+  </svg>
+
+  <!-- BARRA SUPERIOR -->
+  <header class="topbar">
+    <div class="topbar-brand">
+      <div class="brand-logo" aria-hidden="true">
+        <svg class="brand-logo-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.95" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h6.5"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="8" y1="11" x2="13" y2="11"/>
+          <line x1="8" y1="15" x2="11.5" y2="15"/>
+          <circle cx="17.2" cy="16.8" r="3.2"/>
+          <line x1="19.6" y1="19.2" x2="21.8" y2="21.4"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="brand-title">FinderJR · Biblioteca documental</h1>
+        <p class="brand-subtitle" id="folderStatusText">Cargando Biblioteca...</p>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <div class="index-progress" id="indexProgress" title="Indexación en segundo plano">
+        <svg class="icon spin"><use href="#ico-refresh"></use></svg>
+        <span id="indexProgressText">Indexando…</span>
+        <div class="bar"><span id="indexProgressBar"></span></div>
+      </div>
+      <button class="btn btn-secondary" id="btnSync" title="Buscar documentos nuevos o modificados en la Biblioteca">
+        <svg class="icon"><use href="#ico-refresh"></use></svg> Sincronizar
+      </button>
+      <button class="btn btn-secondary" id="btnExportCsv" title="Exportar la lista de resultados a Excel (CSV)">
+        <svg class="icon"><use href="#ico-table"></use></svg> Exportar Excel
+      </button>
+      <button class="btn btn-primary" id="btnExportPdfBundle" title="Generar un único PDF con los documentos encontrados (máx. 300)">
+        <svg class="icon"><use href="#ico-layers"></use></svg> Unir resultados en 1 PDF
+      </button>
+      <button class="btn btn-outline" id="btnOpenPrefs" title="Carpeta de la Biblioteca y exclusiones">
+        <svg class="icon"><use href="#ico-settings"></use></svg> Preferencias
+      </button>
+    </div>
+  </header>
+
+  <!-- CONTENEDOR PRINCIPAL EN 3 PANELES (FILTROS | GRID | PREVISUALIZACIÓN) -->
+  <main class="workspace">
+    <!-- 1. PANEL IZQUIERDO DE FILTROS -->
+    <aside class="filters-panel">
+      <div class="panel-header">
+        <h2>Búsqueda</h2>
+        <button class="btn-link" id="btnResetFilters" title="Vaciar todos los campos de búsqueda">Limpiar todo</button>
+      </div>
+
+      <div class="filters-body">
+        <form id="searchForm" autocomplete="off" onsubmit="return false;">
+          <div class="filter-group">
+            <label for="qTodas"><svg class="icon icon-label"><use href="#ico-search"></use></svg> Contiene todas estas palabras</label>
+            <div class="search-input-wrap">
+              <input type="text" id="qTodas" class="search-field" data-key="todas" placeholder="Ej: davo pantalón 2023" />
+              <button type="button" class="clear-input-btn" data-clear="qTodas" title="Borrar">&times;</button>
+            </div>
+          </div>
+
+          <div class="filter-group">
+            <label for="qAlguna"><svg class="icon icon-label"><use href="#ico-layers"></use></svg> Contiene alguna de estas palabras</label>
+            <div class="search-input-wrap">
+              <input type="text" id="qAlguna" class="search-field" data-key="alguna" placeholder="Ej: fianza garantía aval" />
+              <button type="button" class="clear-input-btn" data-clear="qAlguna" title="Borrar">&times;</button>
+            </div>
+          </div>
+
+          <div class="filter-group">
+            <label for="qFrase"><svg class="icon icon-label"><use href="#ico-align-left"></use></svg> Contiene esta frase exacta</label>
+            <div class="search-input-wrap">
+              <input type="text" id="qFrase" class="search-field" data-key="frase" placeholder="Ej: contrato de arrendamiento" />
+              <button type="button" class="clear-input-btn" data-clear="qFrase" title="Borrar">&times;</button>
+            </div>
+          </div>
+
+          <div class="filter-group">
+            <label for="qExcluye"><svg class="icon icon-label"><use href="#ico-x-circle"></use></svg> No contiene ninguna de estas palabras</label>
+            <div class="search-input-wrap">
+              <input type="text" id="qExcluye" class="search-field search-exclude" data-key="excluye" placeholder="Ej: abono rectificativa" />
+              <button type="button" class="clear-input-btn" data-clear="qExcluye" title="Borrar">&times;</button>
+            </div>
+          </div>
+        </form>
+
+        <div class="search-help">
+          <strong>Cómo busca</strong>
+          <ul>
+            <li>Busca en el <b>texto</b> del documento, en el <b>nombre del archivo</b> y en su <b>carpeta</b>.</li>
+            <li>No distingue mayúsculas ni acentos.</li>
+            <li>Las palabras se buscan por su comienzo: <code>arrend</code> encuentra <i>arrendamiento</i>, <i>arrendador</i>…</li>
+            <li>Las cifras se encuentran con o sin punto de miles: <code>1224,00</code> = <code>1.224,00</code>.</li>
+            <li>Separadores indiferentes: <code>B-85890895</code> = <code>B85890895</code>.</li>
+            <li>Los documentos escaneados sin texto (marcados <span class="ocr-badge">OCR</span>) solo se encuentran por nombre y carpeta.</li>
+          </ul>
+        </div>
+      </div>
+    </aside>
+
+    <div class="panel-resizer" id="resizerLeft" title="Arrastra para redimensionar el panel de búsqueda (doble clic para restaurar)"></div>
+
+    <!-- 2. PANEL CENTRAL: KPIs Y GRID DE RESULTADOS -->
+    <section class="grid-panel">
+      <div class="kpi-bar">
+        <div class="kpi-card">
+          <span class="kpi-label">Documentos encontrados</span>
+          <strong class="kpi-value" id="kpiTotalDocs">0</strong>
+        </div>
+        <div class="kpi-group-sort">
+          <label for="sortSelect">Ordenar:</label>
+          <select id="sortSelect">
+            <option value="relevancia">Relevancia</option>
+            <option value="fecha_desc">Fecha del archivo (más reciente)</option>
+            <option value="fecha_asc">Fecha del archivo (más antigua)</option>
+            <option value="file_asc">Nombre de archivo (A-Z)</option>
+            <option value="file_desc">Nombre de archivo (Z-A)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="table-container" id="gridTableContainer">
+        <table class="results-table">
+          <thead>
+            <tr>
+              <th class="col-fecha sortable-th" data-sort-col="fecha" title="Fecha de modificación del archivo. Clic para ordenar">
+                <span class="th-content">Fecha <span class="sort-indicator"></span></span>
+                <span class="col-resizer" data-col="col_fecha_px" title="Arrastra para cambiar el ancho (doble clic restaura)"></span>
+              </th>
+              <th class="col-concepto sortable-th" data-sort-col="file" title="Clic para ordenar por nombre de archivo">
+                <span class="th-content">Documento / Ocurrencia <span class="sort-indicator"></span></span>
+              </th>
+              <th class="col-origen" title="Carpeta de la Biblioteca">
+                <span class="th-content">Carpeta</span>
+                <span class="col-resizer" data-col="col_origen_px" title="Arrastra para cambiar el ancho (doble clic restaura)"></span>
+              </th>
+            </tr>
+          </thead>
+          <tbody id="resultsTbody">
+            <tr><td colspan="3" class="empty-cell">Cargando documentos...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="grid-footer">
+        <span id="paginationInfo">Mostrando 0 de 0 documentos</span>
+        <div class="pagination-btns">
+          <button class="btn btn-sm" id="btnPrevPage" disabled>&laquo; Anterior</button>
+          <button class="btn btn-sm" id="btnNextPage" disabled>Siguiente &raquo;</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="panel-resizer" id="resizerRight" title="Arrastra para redimensionar el grid y el previsualizador (doble clic para restaurar)"></div>
+
+    <!-- 3. PANEL DERECHO: PREVISUALIZACIÓN -->
+    <aside class="preview-panel">
+      <div class="preview-header" id="previewHeader">
+        <div class="preview-title-block">
+          <span class="preview-badge" id="prevCategoria">Selecciona un documento</span>
+          <h3 id="prevTitle">Haz clic en cualquier fila del listado para previsualizar el documento</h3>
+          <p id="prevSubtitle" class="preview-meta">Puedes usar las teclas ↑ y ↓ del teclado para recorrer los resultados rápidamente.</p>
+        </div>
+
+        <div class="preview-toolbar" id="previewToolbar" style="display: none;">
+          <div class="view-tabs">
+            <button type="button" class="tab-btn active" data-tab="highlight" title="Documento con las palabras buscadas resaltadas en amarillo">
+              <svg class="icon"><use href="#ico-search"></use></svg> Con Resaltado
+            </button>
+            <button type="button" class="tab-btn" data-tab="pdf" title="Visor PDF nativo del navegador">
+              <svg class="icon"><use href="#ico-file-text"></use></svg> Visor PDF
+            </button>
+            <button type="button" class="tab-btn" data-tab="text" title="Texto íntegro extraído del documento">
+              <svg class="icon"><use href="#ico-align-left"></use></svg> Texto
+            </button>
+          </div>
+
+          <div class="preview-actions">
+            <a class="btn btn-sm btn-primary" id="btnDownloadSinglePdf" href="#" title="Descargar el documento">
+              <svg class="icon"><use href="#ico-download"></use></svg> Descargar
+            </a>
+            <a class="btn btn-sm btn-outline" id="btnOpenNewTab" href="#" target="_blank" title="Abrir en una pestaña nueva">
+              <svg class="icon"><use href="#ico-external-link"></use></svg> Abrir
+            </a>
+            <button class="btn btn-sm btn-outline" id="btnOpenFolder" title="Mostrar el archivo en el Explorador de Windows">
+              <svg class="icon"><use href="#ico-folder-open"></use></svg> Carpeta
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="multipage-bar" id="multipageBar" style="display: none;">
+        <button class="btn btn-xs" id="btnPrevDocPage">&lsaquo; Pág. ant.</button>
+        <span id="docPageIndicator">Página 1 de 1</span>
+        <button class="btn btn-xs" id="btnNextDocPage">Pág. sig. &rsaquo;</button>
+        <span class="zoom-controls">
+          <button class="btn btn-xs" id="btnZoomOut" title="Reducir zoom">&minus;</button>
+          <button class="btn btn-xs" id="btnZoomReset" title="Ajustar al ancho">100%</button>
+          <button class="btn btn-xs" id="btnZoomIn" title="Ampliar zoom">&plus;</button>
+        </span>
+      </div>
+
+      <div class="preview-body" id="previewBody">
+        <div class="preview-placeholder" id="previewPlaceholder">
+          <div class="placeholder-icon">
+            <svg class="icon icon-xl"><use href="#ico-file-text"></use></svg>
+          </div>
+          <h4>Previsualización Instantánea</h4>
+          <p>Al seleccionar un documento verás aquí sus páginas con los términos buscados resaltados en amarillo.</p>
+        </div>
+
+        <div class="preview-pane" id="paneHighlight" style="display: none;">
+          <div class="image-scroll-wrap" id="imageScrollWrap">
+            <img id="highlightImg" alt="Previsualización del documento" />
+          </div>
+        </div>
+
+        <div class="preview-pane" id="panePdf" style="display: none;">
+          <iframe id="pdfIframe" title="Visor PDF del documento"></iframe>
+        </div>
+
+        <div class="preview-pane" id="paneText" style="display: none;">
+          <div class="doc-metadata-grid" id="docMetadataGrid"></div>
+          <pre class="extracted-text-box" id="extractedTextBox"></pre>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- MODAL DE PREFERENCIAS -->
+  <div class="modal-backdrop" id="prefsModal" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title"><svg class="icon"><use href="#ico-settings"></use></svg> Preferencias</h3>
+        <button class="modal-close" id="btnClosePrefs">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="prefBiblioteca"><svg class="icon icon-label"><use href="#ico-folder"></use></svg> Carpeta de la Biblioteca</label>
+          <input type="text" id="prefBiblioteca" placeholder="C:\Users\...\Biblioteca" />
+          <small class="form-help" id="prefFolderStatus">Ruta local o de red de la carpeta de documentos.</small>
+        </div>
+
+        <div class="form-row-checks">
+          <label class="checkbox-label">
+            <input type="checkbox" id="prefIncludeSubfolders" checked />
+            Incluir subcarpetas
+          </label>
+          <label class="checkbox-label">
+            Sincronizar cada
+            <input type="number" id="prefInterval" min="1" max="240" style="width: 64px;" /> minutos
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label><svg class="icon icon-label"><use href="#ico-folder"></use></svg> Carpetas excluidas</label>
+          <div class="catalog-box">
+            <div class="catalog-list" id="excludedListContainer"></div>
+            <div class="catalog-add-row">
+              <input type="text" id="newExcludedInput" placeholder="Nombre de carpeta (ej. dbGes26_Backup)" />
+              <button type="button" class="btn btn-sm btn-secondary" id="btnAddExcluded">+ Añadir</button>
+            </div>
+          </div>
+          <small class="form-help">Cualquier carpeta con ese nombre, a cualquier nivel, se ignora.</small>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="btnReindexAll" style="margin-right: auto;" title="Volver a leer todos los documentos desde cero (unos minutos)">
+          <svg class="icon"><use href="#ico-refresh"></use></svg> Reindexar todo
+        </button>
+        <button class="btn btn-outline" id="btnCancelPrefs">Cancelar</button>
+        <button class="btn btn-primary" id="btnSavePrefs"><svg class="icon"><use href="#ico-save"></use></svg> Guardar y sincronizar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
