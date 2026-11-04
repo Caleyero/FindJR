@@ -32,6 +32,10 @@ const state = {
   checked: new Set(), // documentos marcados con la casilla
   lastCheckIdx: null,
   renaming: false, // hay un nombre en edición
+  // Fuentes de documentos (cada una con su índice y sus etiquetas)
+  fuente: null, // id de la fuente con la que trabaja esta pestaña
+  fuentes: [],
+  folderConfigurada: true,
 };
 
 let searchDebounceTimer = null;
@@ -136,7 +140,21 @@ function buildQueryParams() {
 }
 
 function termsQuery() {
-  return state.terms.map((t) => `&t=${encodeURIComponent(t)}`).join("");
+  return state.terms.map((t) => `&t=${encodeURIComponent(t)}`).join("") + fuenteQuery();
+}
+
+// Los id de documento se repiten entre fuentes: la fuente en la URL evita que la caché del navegador
+// (o el visor PDF) muestre el documento de otra fuente
+function fuenteQuery() {
+  return state.fuente ? `&f=${encodeURIComponent(state.fuente)}` : "";
+}
+
+// Cabeceras de las peticiones que modifican algo: el servidor las rechaza (409) si la fuente activa
+// ha cambiado en otra pestaña
+function postHeaders() {
+  const h = { "Content-Type": "application/json" };
+  if (state.fuente) h["X-FinderJR-Fuente"] = state.fuente;
+  return h;
 }
 
 // ============================================================================
@@ -146,10 +164,12 @@ function termsQuery() {
 async function loadInfo() {
   try {
     const data = await (await fetch("/api/info")).json();
+    if (await aplicarFuente(data)) return; // ha cambiado en otra pestaña: ya se ha recargado todo
     const st = data.stats || {};
-    document.getElementById("folderStatusText").textContent =
-      `${data.folder_display} — ${fmtNum(st.total_docs)} documentos (${fmtNum(st.total_pages)} págs.) · ` +
-      `${fmtNum(st.sin_texto)} escaneados sin texto`;
+    document.getElementById("folderStatusText").textContent = !data.folder_configurada
+      ? "Sin carpeta configurada: indícala en Preferencias"
+      : `${data.folder_display}${data.folder_exists ? "" : " (no accesible)"} — ${fmtNum(st.total_docs)} documentos ` +
+        `(${fmtNum(st.total_pages)} págs.) · ${fmtNum(st.sin_texto)} escaneados sin texto`;
     if (data.ui_layout && !window._layoutInitializedFromDisk) {
       window._layoutInitializedFromDisk = true;
       applyPanelLayout(data.ui_layout, false);
@@ -215,6 +235,14 @@ function renderGridRows() {
         No hay documentos que cumplan la búsqueda.<br/>
         <small>Prueba con menos palabras, con el comienzo de una palabra o revisa el campo «No contiene».</small>
       </td></tr>`;
+    if (!state.folderConfigurada) {
+      tbody.innerHTML = `
+      <tr><td colspan="4" class="empty-cell">
+        La fuente <b>${escapeHtml(nombreFuente())}</b> todavía no tiene carpeta de documentos.<br/>
+        <button type="button" class="btn btn-sm btn-primary empty-action" id="btnConfigFuente">Configurar carpeta</button>
+      </td></tr>`;
+      document.getElementById("btnConfigFuente").addEventListener("click", () => openPrefsModal(state.fuente));
+    }
     return;
   }
   const terms = state.terms;
@@ -294,8 +322,8 @@ async function selectDocument(docId, scrollIntoView = true) {
     renderPreviewTags();
     document.getElementById("previewToolbar").style.display = "flex";
     document.getElementById("previewPlaceholder").style.display = "none";
-    document.getElementById("btnDownloadSinglePdf").href = `/api/doc/${doc.id}/pdf?download=1`;
-    document.getElementById("btnOpenNewTab").href = `/api/doc/${doc.id}/pdf`;
+    document.getElementById("btnDownloadSinglePdf").href = `/api/doc/${doc.id}/pdf?download=1${fuenteQuery()}`;
+    document.getElementById("btnOpenNewTab").href = `/api/doc/${doc.id}/pdf?${fuenteQuery().slice(1)}`;
     updatePreviewPane();
   } catch (err) {
     console.error("Error cargando el documento:", err);
@@ -323,7 +351,7 @@ function updatePreviewPane() {
     panePdf.style.display = "block";
     bar.style.display = "none";
     const iframe = document.getElementById("pdfIframe");
-    const target = `/api/doc/${doc.id}/pdf`;
+    const target = `/api/doc/${doc.id}/pdf?${fuenteQuery().slice(1)}`;
     if (!iframe.src.endsWith(target)) iframe.src = target;
   } else {
     paneText.style.display = "block";
@@ -371,11 +399,12 @@ function updateIndexProgress(estado) {
 async function pollStatus() {
   try {
     const estado = await (await fetch("/api/status")).json();
+    if (estado.activa && state.fuente && estado.activa !== state.fuente && !state.renaming) return loadInfo();
     updateIndexProgress(estado);
     if (state.wasIndexing && !estado.activo && !state.renaming) {
       const u = estado.ultimo || {};
       if (u.status === "ok" && (u.added || u.updated || u.removed)) {
-        showToast(`Biblioteca actualizada: +${fmtNum(u.added)} nuevos, ${fmtNum(u.updated)} modificados, ${fmtNum(u.removed)} eliminados.`);
+        showToast(`${nombreFuente()} actualizada: +${fmtNum(u.added)} nuevos, ${fmtNum(u.updated)} modificados, ${fmtNum(u.removed)} eliminados.`);
         await loadInfo();
         await runSearch(false);
       }
@@ -388,8 +417,9 @@ async function pollStatus() {
 
 async function triggerSync(payload = {}) {
   const data = await (
-    await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+    await fetch("/api/sync", { method: "POST", headers: postHeaders(), body: JSON.stringify(payload) })
   ).json();
+  if (data.fuente_cambiada) return loadInfo();
   showToast(data.started ? "Sincronización iniciada en segundo plano." : "Ya hay una sincronización en curso.");
   state.wasIndexing = true;
   updateIndexProgress(data.estado || { activo: true, mensaje: "Iniciando…" });
@@ -431,39 +461,126 @@ function readCatalogList(containerId, pendingInputId) {
   return out;
 }
 
-async function openPrefsModal() {
+// Borradores de las fuentes mientras el modal está abierto (se puede pasar de una a otra sin perder cambios)
+const prefs = { fuentes: [], originales: {}, sel: null };
+
+function prefsLeerFormulario() {
+  const f = prefs.fuentes.find((x) => x.id === prefs.sel);
+  if (!f) return;
+  f.nombre = document.getElementById("prefFuenteNombre").value.trim() || f.nombre;
+  f.biblioteca = document.getElementById("prefBiblioteca").value.trim();
+  f.include_subfolders = document.getElementById("prefIncludeSubfolders").checked;
+  f.excluded_dirs = readCatalogList("excludedListContainer", "newExcludedInput");
+}
+
+function prefsMostrarFuente(id) {
+  prefsLeerFormulario();
+  prefs.sel = id;
+  const f = prefs.fuentes.find((x) => x.id === id);
+  document.getElementById("prefFuenteBox").style.setProperty("--fuente-sel", f.color);
+  document.getElementById("prefFuenteNombre").value = f.nombre;
+  document.getElementById("prefBiblioteca").value = f.biblioteca || "";
+  document.getElementById("prefIncludeSubfolders").checked = f.include_subfolders !== false;
+  const list = document.getElementById("excludedListContainer");
+  list.innerHTML = "";
+  (f.excluded_dirs || []).forEach((d) => appendCatalogRow("excludedListContainer", d));
+  const orig = prefs.originales[id] || {};
+  const st = document.getElementById("prefFolderStatus");
+  if (!f.biblioteca) st.textContent = "Indica la carpeta de esta fuente (ruta local o de red).";
+  else if (f.biblioteca !== orig.biblioteca) st.textContent = "Carpeta nueva: se indexará al guardar.";
+  else st.textContent = orig.existe ? `Carpeta verificada · ${fmtNum(orig.total_docs)} documentos indexados` : "Atención: la carpeta no existe o no es accesible.";
+  const quitar = document.getElementById("btnQuitarFuente");
+  quitar.disabled = id === state.fuente || prefs.fuentes.length <= 1;
+  quitar.title = id === state.fuente ? "Es la fuente activa: cambia antes a otra para poder quitarla." : "Quitar la fuente (sus etiquetas se conservan)";
+  prefsPintarFuentes();
+}
+
+function prefsPintarFuentes() {
+  const c = document.getElementById("prefFuentesTabs");
+  c.innerHTML =
+    prefs.fuentes
+      .map(
+        (f) => `<button type="button" class="pref-fuente ${f.id === prefs.sel ? "sel" : ""}" data-id="${f.id}" style="--c:${f.color}">
+          <span class="dot"></span>${escapeHtml(f.nombre)}${f.id === state.fuente ? ' <small>(activa)</small>' : ""}</button>`
+      )
+      .join("") +
+    `<span class="pref-fuente-nueva"><input type="text" id="prefNuevaFuente" maxlength="30" placeholder="Nueva fuente…" />
+     <button type="button" class="btn btn-sm btn-secondary" id="btnNuevaFuente">+ Añadir</button></span>`;
+  c.querySelectorAll(".pref-fuente").forEach((b) => b.addEventListener("click", () => prefsMostrarFuente(b.dataset.id)));
+  const inp = document.getElementById("prefNuevaFuente");
+  const crear = async () => {
+    const nombre = inp.value.trim();
+    if (!nombre) return inp.focus();
+    try {
+      const f = await apiPost("/api/fuentes", { nombre });
+      prefsLeerFormulario();
+      prefs.fuentes.push(f);
+      prefs.originales[f.id] = JSON.parse(JSON.stringify(f));
+      prefsMostrarFuente(f.id);
+      document.getElementById("prefBiblioteca").focus();
+      renderFuenteSwitch(state.fuentes.concat([f]));
+    } catch (err) {
+      showToast(err.message, 6000);
+    }
+  };
+  document.getElementById("btnNuevaFuente").addEventListener("click", crear);
+  inp.addEventListener("keydown", (e) => e.key === "Enter" && (e.preventDefault(), crear()));
+}
+
+async function openPrefsModal(fid = null) {
   try {
-    const data = await (await fetch("/api/config")).json();
-    const cfg = data.config || {};
-    document.getElementById("prefBiblioteca").value = cfg.biblioteca || "";
-    document.getElementById("prefIncludeSubfolders").checked = cfg.include_subfolders !== false;
-    document.getElementById("prefInterval").value = cfg.sync_interval_min || 10;
-    const list = document.getElementById("excludedListContainer");
-    list.innerHTML = "";
-    (cfg.excluded_dirs || []).forEach((d) => appendCatalogRow("excludedListContainer", d));
-    document.getElementById("prefFolderStatus").textContent = data.folder.exists
-      ? `Carpeta verificada: ${data.folder.display}`
-      : "Atención: la carpeta indicada no existe o no es accesible.";
+    const [cfgData, fData] = await Promise.all([(await fetch("/api/config")).json(), (await fetch("/api/fuentes")).json()]);
+    document.getElementById("prefInterval").value = (cfgData.config || {}).sync_interval_min || 10;
+    prefs.fuentes = fData.items.map((f) => ({ id: f.id, nombre: f.nombre, color: f.color, biblioteca: f.biblioteca,
+      include_subfolders: f.include_subfolders, excluded_dirs: f.excluded_dirs }));
+    prefs.originales = Object.fromEntries(fData.items.map((f) => [f.id, JSON.parse(JSON.stringify(f))]));
+    prefs.sel = null;
+    prefsMostrarFuente(typeof fid === "string" ? fid : fData.activa);
     document.getElementById("prefsModal").style.display = "flex";
+    if (!document.getElementById("prefBiblioteca").value) document.getElementById("prefBiblioteca").focus();
   } catch (err) {
     showToast("Error al abrir las preferencias: " + err.message);
   }
 }
 
-async function savePrefs() {
-  const payload = {
-    biblioteca: document.getElementById("prefBiblioteca").value.trim(),
-    include_subfolders: document.getElementById("prefIncludeSubfolders").checked,
-    sync_interval_min: parseInt(document.getElementById("prefInterval").value, 10) || 10,
-    excluded_dirs: readCatalogList("excludedListContainer", "newExcludedInput"),
-  };
+async function quitarFuente() {
+  const f = prefs.fuentes.find((x) => x.id === prefs.sel);
+  if (!f) return;
+  const ok = confirm(
+    `¿Quitar la fuente «${f.nombre}»?\n\n` +
+      "Los documentos de su carpeta no se tocan. Se borra su índice de búsqueda y se conservan sus etiquetas: " +
+      "si vuelves a crear una fuente con el mismo nombre, las recuperará."
+  );
+  if (!ok) return;
   try {
-    await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    await apiPost(`/api/fuentes/${f.id}/borrar`, {});
+    prefs.fuentes = prefs.fuentes.filter((x) => x.id !== f.id);
+    prefs.sel = null;
+    prefsMostrarFuente(state.fuente);
+    showToast(`Fuente «${f.nombre}» quitada.`);
+    loadInfo();
+  } catch (err) {
+    showToast(err.message, 6000);
+  }
+}
+
+async function savePrefs() {
+  prefsLeerFormulario();
+  try {
+    for (const f of prefs.fuentes) {
+      const o = prefs.originales[f.id] || {};
+      const cambios = {};
+      ["nombre", "biblioteca", "include_subfolders"].forEach((k) => f[k] !== o[k] && (cambios[k] = f[k]));
+      if (JSON.stringify(f.excluded_dirs || []) !== JSON.stringify(o.excluded_dirs || [])) cambios.excluded_dirs = f.excluded_dirs;
+      if (Object.keys(cambios).length) await apiPost(`/api/fuentes/${f.id}`, cambios);
+    }
+    await apiPost("/api/config", { sync_interval_min: parseInt(document.getElementById("prefInterval").value, 10) || 10 });
     document.getElementById("prefsModal").style.display = "none";
     showToast("Preferencias guardadas. Sincronizando en segundo plano…");
     state.wasIndexing = true;
+    await loadInfo();
   } catch (err) {
-    showToast("Error guardando preferencias: " + err.message);
+    showToast("Error guardando preferencias: " + err.message, 6000);
   }
 }
 
@@ -626,7 +743,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!state.selectedDocId) return;
     const r = await fetch("/api/open_location", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: postHeaders(),
       body: JSON.stringify({ doc_id: state.selectedDocId }),
     });
     if (!r.ok) showToast("No se ha podido abrir la carpeta del documento.");
@@ -639,6 +756,13 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (document.getElementById("tagsModal").style.display !== "none") return closeTagsModal();
       if (deleteModalOpen()) return closeDeleteModal();
       if (state.checked.size && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return clearChecks();
+    }
+    if (e.altKey && !e.ctrlKey && !e.metaKey && /^Digit[1-9]$/.test(e.code) && !state.renaming && !modalAbierto()) {
+      const f = state.fuentes[parseInt(e.code.slice(5), 10) - 1];
+      if (f) {
+        e.preventDefault();
+        return cambiarFuente(f.id);
+      }
     }
     if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName) && document.activeElement.type !== "checkbox") return;
     if (deleteModalOpen()) return;
@@ -675,12 +799,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Preferencias
   const closePrefs = () => (document.getElementById("prefsModal").style.display = "none");
-  document.getElementById("btnOpenPrefs").addEventListener("click", openPrefsModal);
+  document.getElementById("btnOpenPrefs").addEventListener("click", () => openPrefsModal());
   document.getElementById("btnClosePrefs").addEventListener("click", closePrefs);
   document.getElementById("btnCancelPrefs").addEventListener("click", closePrefs);
   document.getElementById("btnSavePrefs").addEventListener("click", savePrefs);
+  document.getElementById("btnQuitarFuente").addEventListener("click", quitarFuente);
   document.getElementById("btnReindexAll").addEventListener("click", () => {
-    if (!confirm("¿Volver a leer todos los documentos desde cero? Tardará unos minutos.")) return;
+    if (!confirm(`¿Volver a leer desde cero todos los documentos de «${nombreFuente()}»? Tardará unos minutos.`)) return;
     closePrefs();
     triggerSync({ force_reindex: true });
   });
@@ -836,8 +961,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 // ============================================================================
 
 async function apiPost(url, payload) {
-  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload || {}) });
+  const res = await fetch(url, { method: "POST", headers: postHeaders(), body: JSON.stringify(payload || {}) });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 409 && data.fuente_cambiada) {
+    await loadInfo(); // se pone al día con la fuente activa
+    throw new Error("No se ha hecho nada: la fuente activa había cambiado en otra pestaña.");
+  }
   if (!res.ok || data.error) throw new Error(data.error || `Error ${res.status}`);
   return data;
 }
@@ -1385,4 +1514,94 @@ async function confirmDelete() {
     btn.disabled = false;
     showToast(err.message, 7000);
   }
+}
+
+// ============================================================================
+// FUENTES DE DOCUMENTOS (Personal, Profesional…: índices y etiquetas aislados)
+// ============================================================================
+
+function nombreFuente() {
+  const f = state.fuentes.find((x) => x.id === state.fuente);
+  return f ? f.nombre : "Biblioteca";
+}
+
+function modalAbierto() {
+  return [...document.querySelectorAll(".modal-backdrop")].some((m) => m.style.display !== "none");
+}
+
+function renderFuenteSwitch(fuentes) {
+  state.fuentes = fuentes || state.fuentes;
+  const c = document.getElementById("fuenteSwitch");
+  c.style.display = state.fuentes.length > 1 ? "" : "none";
+  c.innerHTML = state.fuentes
+    .map((f, i) => {
+      const on = f.id === state.fuente;
+      return `<button type="button" role="tab" aria-selected="${on}" class="fuente-btn ${on ? "active" : ""}" data-id="${f.id}"
+        style="--c:${f.color}" title="${escapeHtml(f.nombre)} (Alt+${i + 1})">${escapeHtml(f.nombre)}</button>`;
+    })
+    .join("");
+  c.querySelectorAll(".fuente-btn").forEach((b) => b.addEventListener("click", () => cambiarFuente(b.dataset.id)));
+}
+
+// Aplica la fuente que indica el servidor (/api/info). Devuelve true si era otra distinta y se ha recargado todo.
+async function aplicarFuente(info) {
+  if (!info || !info.fuente) return false;
+  const f = info.fuente;
+  const cambia = state.fuente !== null && state.fuente !== f.id;
+  const primera = state.fuente === null;
+  state.fuente = f.id;
+  state.folderConfigurada = info.folder_configurada !== false;
+  document.documentElement.style.setProperty("--fuente", f.color || "#2563eb");
+  document.querySelector(".brand-title").textContent = `FinderJR · ${f.nombre}`;
+  document.title = `FinderJR · ${f.nombre}`;
+  renderFuenteSwitch(info.fuentes);
+  if (!cambia) return false;
+  if (!primera) showToast(`Fuente activa: ${f.nombre} (se cambió en otra pestaña).`, 5000);
+  await entrarEnFuente(info);
+  return true;
+}
+
+async function cambiarFuente(id) {
+  if (id === state.fuente || state.renaming) return;
+  try {
+    const info = await apiPost("/api/fuente/activar", { id });
+    state.fuente = info.fuente.id;
+    await entrarEnFuente(info);
+  } catch (err) {
+    showToast(err.message, 6000);
+  }
+}
+
+// Todo lo que pertenece a la fuente anterior (filtros de etiqueta, marcados, documento abierto) se descarta;
+// los términos de búsqueda se conservan para poder repetir la misma búsqueda en la otra fuente.
+async function entrarEnFuente(info) {
+  state.fuente = null; // para que aplicarFuente no lo trate como un cambio externo
+  await aplicarFuente(info);
+  state.filtroEt.clear();
+  state.filtroEtx.clear();
+  state.sinEt = false;
+  state.checked.clear();
+  state.lastCheckIdx = null;
+  closeTagPopover();
+  resetPreview();
+  await loadInfo();
+  await loadEtiquetas();
+  await runSearch(true);
+}
+
+function resetPreview() {
+  state.selectedDocId = null;
+  state.selectedDoc = null;
+  state.currentDocPage = 1;
+  document.getElementById("previewToolbar").style.display = "none";
+  document.getElementById("prevTags").style.display = "none";
+  document.getElementById("multipageBar").style.display = "none";
+  ["paneHighlight", "panePdf", "paneText"].forEach((id) => (document.getElementById(id).style.display = "none"));
+  document.getElementById("pdfIframe").src = "about:blank";
+  document.getElementById("highlightImg").removeAttribute("src");
+  document.getElementById("previewPlaceholder").style.display = "";
+  document.getElementById("prevCategoria").textContent = "Selecciona un documento";
+  document.getElementById("prevTitle").textContent = "Haz clic en cualquier fila del listado para previsualizar el documento";
+  document.getElementById("prevTitle").title = "";
+  document.getElementById("prevSubtitle").textContent = "Puedes usar las teclas ↑ y ↓ del teclado para recorrer los resultados rápidamente.";
 }

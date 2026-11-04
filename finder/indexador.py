@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Indexador incremental de la Biblioteca y proceso en segundo plano.
+Indexador incremental de las fuentes de documentos y proceso en segundo plano.
+Cada fuente (carpeta) tiene su propio índice; aquí «Biblioteca» es la carpeta de una fuente.
 
 Ciclo de sincronización:
   1. Descubre archivos nuevos / modificados / eliminados (ruta + tamaño + fecha).
@@ -18,14 +19,14 @@ import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import etiquetas
-from .config import excluded_dirs, load_config, to_display_path, to_local_path
+from .config import excluded_dirs, fuente, load_config, to_display_path, to_local_path
 from .db import get_conn, init_db, meta_set
 from .extraccion import extract_pdf_text
 
 _SYNC_LOCK = threading.Lock()
 _STATE_LOCK = threading.Lock()
 STATE: Dict[str, Any] = {
-    "activo": False, "fase": "inactivo", "total": 0, "hechos": 0, "mensaje": "",
+    "activo": False, "fase": "inactivo", "fuente": "", "total": 0, "hechos": 0, "mensaje": "",
     "inicio": None, "ultimo": None, "error": None,
 }
 
@@ -44,18 +45,18 @@ def get_state() -> Dict[str, Any]:
 # Descubrimiento
 # ------------------------------------------------------------------------------
 
-def biblioteca_path(cfg: Dict[str, Any]) -> str:
-    return to_local_path(cfg.get("biblioteca", ""))
+def biblioteca_path(fte: Dict[str, Any]) -> str:
+    return to_local_path(fte.get("biblioteca", ""))
 
 
-def discover(cfg: Dict[str, Any]) -> List[Tuple[str, str, int, float]]:
-    """[(ruta_local, ruta_rel, size, mtime)] de los archivos indexables."""
-    root = biblioteca_path(cfg)
+def discover(cfg: Dict[str, Any], fte: Dict[str, Any]) -> List[Tuple[str, str, int, float]]:
+    """[(ruta_local, ruta_rel, size, mtime)] de los archivos indexables de una fuente."""
+    root = biblioteca_path(fte)
     if not root or not os.path.isdir(root):
         return []
     exts = {e.lower() if e.startswith(".") else "." + e.lower() for e in cfg.get("extensions", [".pdf"])}
-    excl = set(excluded_dirs(cfg))
-    include_sub = bool(cfg.get("include_subfolders", True))
+    excl = set(excluded_dirs(fte))
+    include_sub = bool(fte.get("include_subfolders", True))
     out = []
     for cur, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d.lower() not in excl and not d.startswith(".")]
@@ -116,19 +117,29 @@ def _store(conn, item: Tuple[str, str, int, float], er: Dict[str, Any], prev_id:
 # Sincronización
 # ------------------------------------------------------------------------------
 
-def sync(force_reindex: bool = False) -> Dict[str, Any]:
+def sync(force_reindex: bool = False, fid: Optional[str] = None) -> Dict[str, Any]:
+    """Sincroniza el índice de una fuente (por defecto, la activa) con su carpeta."""
     if not _SYNC_LOCK.acquire(blocking=False):
         return {"status": "busy"}
     t0 = time.time()
     res: Dict[str, Any] = {"status": "ok", "added": 0, "updated": 0, "removed": 0, "errors": 0}
     try:
-        _set_state(activo=True, fase="escaneando", total=0, hechos=0, error=None,
-                   mensaje="Explorando la Biblioteca…", inicio=datetime.datetime.now().isoformat(timespec="seconds"))
-        init_db()
         cfg = load_config()
-        conn = get_conn()
+        fte = fuente(cfg, fid)
+        fid = fte["id"]
+        res["fuente"] = fid
+        root = biblioteca_path(fte)
+        if not root or not os.path.isdir(root):
+            # Carpeta sin configurar o inaccesible (p. ej. unidad desconectada): no se toca el índice,
+            # que si no se vaciaría entero.
+            res.update(status="sin_carpeta")
+            return res
+        _set_state(activo=True, fase="escaneando", total=0, hechos=0, error=None, fuente=fte["nombre"],
+                   mensaje=f"Explorando {fte['nombre']}…", inicio=datetime.datetime.now().isoformat(timespec="seconds"))
+        init_db(fid)
+        conn = get_conn(fid)
 
-        found = discover(cfg)
+        found = discover(cfg, fte)
         if force_reindex:
             with conn:
                 conn.execute("DELETE FROM archivos")
@@ -149,7 +160,7 @@ def sync(force_reindex: bool = False) -> Dict[str, Any]:
         res["pending"] = len(todo)
 
         _set_state(fase="extrayendo", total=len(todo), hechos=0,
-                   mensaje=f"Indexando {len(todo)} archivos nuevos o modificados…")
+                   mensaje=f"{fte['nombre']}: indexando {len(todo)} archivos nuevos o modificados…")
         max_pages = int(cfg.get("max_pages_text", 60))
         done = 0
         if todo:
@@ -178,7 +189,7 @@ def sync(force_reindex: bool = False) -> Dict[str, Any]:
                             if not er.get("ok"):
                                 res["errors"] += 1
                     done += len(chunk)
-                    _set_state(hechos=done, mensaje=f"Indexando {done:,}/{len(todo):,} archivos…".replace(",", "."))
+                    _set_state(hechos=done, mensaje=f"{fte['nombre']}: indexando {done:,}/{len(todo):,} archivos…".replace(",", "."))
             finally:
                 if pool:
                     pool.shutdown()
@@ -195,7 +206,7 @@ def sync(force_reindex: bool = False) -> Dict[str, Any]:
         res.update(status="error", error=str(e))
         return res
     finally:
-        _set_state(activo=False, fase="inactivo", mensaje="")
+        _set_state(activo=False, fase="inactivo", mensaje="", fuente="")
         _SYNC_LOCK.release()
 
 
@@ -223,7 +234,7 @@ def validar_nombre(base: str) -> str:
     return base
 
 
-def renombrar(doc_id: int, nueva_base: str) -> Dict[str, Any]:
+def renombrar(doc_id: int, nueva_base: str, fid: Optional[str] = None) -> Dict[str, Any]:
     """Renombra en disco el archivo de un documento (conservando la extensión) y actualiza el índice
     y las etiquetas sin volver a extraer el texto. Devuelve el nombre anterior y el nuevo.
     Solo se impide repetir nombre en la misma carpeta (en carpetas distintas es legítimo)."""
@@ -231,7 +242,7 @@ def renombrar(doc_id: int, nueva_base: str) -> Dict[str, Any]:
     if not _SYNC_LOCK.acquire(timeout=5):
         raise ValueError("Hay una sincronización en curso. Inténtalo de nuevo en cuanto termine.")
     try:
-        conn = get_conn()
+        conn = get_conn(fid)
         try:
             r = conn.execute(
                 """SELECT a.id, a.ruta, a.ruta_rel, a.nombre FROM documentos d
@@ -319,15 +330,15 @@ def _a_papelera_wsl(path: str) -> None:
         raise OSError((r.stderr or r.stdout or "").strip()[:300])
 
 
-def eliminar(doc_id: int) -> Dict[str, Any]:
+def eliminar(doc_id: int, fid: Optional[str] = None) -> Dict[str, Any]:
     """Envía el archivo de un documento a la Papelera de reciclaje y lo quita del índice.
 
-    Las etiquetas se conservan en etiquetas.db: si el archivo se restaura desde la Papelera, la
+    Las etiquetas se conservan en etiquetas_<fuente>.db: si el archivo se restaura desde la Papelera, la
     siguiente sincronización lo vuelve a indexar y recupera sus etiquetas."""
     if not _SYNC_LOCK.acquire(timeout=5):
         raise ValueError("Hay una sincronización en curso. Inténtalo de nuevo en cuanto termine.")
     try:
-        conn = get_conn()
+        conn = get_conn(fid)
         try:
             r = conn.execute(
                 """SELECT a.id, a.ruta, a.nombre FROM documentos d
@@ -354,32 +365,67 @@ def eliminar(doc_id: int) -> Dict[str, Any]:
         _SYNC_LOCK.release()
 
 
-def start_sync_async(**kw) -> bool:
-    if _SYNC_LOCK.locked():
-        return False
-    threading.Thread(target=sync, kwargs=kw, daemon=True, name="finder-sync").start()
+def start_sync_async(esperar: bool = False, **kw) -> bool:
+    """Lanza una sincronización en segundo plano. Si ya hay una en curso, devuelve False; con
+    `esperar`, la nueva se encola y arranca en cuanto termine la actual."""
+    if not esperar:
+        if _SYNC_LOCK.locked():
+            return False
+        threading.Thread(target=sync, kwargs=kw, daemon=True, name="finder-sync").start()
+        return True
+
+    def _cuando_se_pueda() -> None:
+        try:
+            while sync(**kw).get("status") == "busy":
+                time.sleep(2)
+        except ValueError:
+            pass  # la fuente se ha quitado mientras tanto
+
+    threading.Thread(target=_cuando_se_pueda, daemon=True, name="finder-sync").start()
     return True
 
 
+def sync_todas() -> None:
+    """Sincroniza todas las fuentes, empezando por la activa."""
+    cfg = load_config()
+    ids = [f["id"] for f in cfg["fuentes"]]
+    ids.sort(key=lambda i: i != cfg.get("fuente_activa"))
+    for fid in ids:
+        try:
+            # Si hay otra sincronización en marcha (p. ej. pedida desde la interfaz), se espera a que acabe
+            while sync(fid=fid).get("status") == "busy":
+                time.sleep(2)
+        except ValueError:
+            pass  # la fuente se ha quitado mientras tanto
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+
+
 def background_loop(stop_event: threading.Event) -> None:
-    """Sincroniza al arrancar y después cada `sync_interval_min` minutos."""
+    """Sincroniza todas las fuentes al arrancar y después cada `sync_interval_min` minutos."""
     while not stop_event.is_set():
         try:
-            sync()
+            sync_todas()
         except Exception:  # noqa: BLE001
             traceback.print_exc()
         mins = max(1, int(load_config().get("sync_interval_min", 10)))
         stop_event.wait(mins * 60)
 
 
-def folder_info() -> Dict[str, Any]:
-    cfg = load_config()
-    p = biblioteca_path(cfg)
-    return {"display": to_display_path(p) or cfg.get("biblioteca", ""), "exists": bool(p) and os.path.isdir(p)}
+def folder_info(fid: Optional[str] = None) -> Dict[str, Any]:
+    fte = fuente(load_config(), fid)
+    p = biblioteca_path(fte)
+    return {"display": to_display_path(p) or fte.get("biblioteca", ""), "exists": bool(p) and os.path.isdir(p),
+            "configurada": bool(str(fte.get("biblioteca", "")).strip())}
 
 
 if __name__ == "__main__":
     import json
     import sys
 
-    print(json.dumps(sync(force_reindex="--full" in sys.argv), ensure_ascii=False, indent=2))
+    from .config import migrar_archivos_legado
+
+    # python -m finder.indexador [--full] [--fuente <id>]   (sin --fuente: la fuente activa)
+    migrar_archivos_legado()
+    fid = sys.argv[sys.argv.index("--fuente") + 1] if "--fuente" in sys.argv[:-1] else None
+    print(json.dumps(sync(force_reindex="--full" in sys.argv, fid=fid), ensure_ascii=False, indent=2))

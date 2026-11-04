@@ -15,6 +15,7 @@
   --warning-bg: #fef9c3;
   --warning-border: #fde047;
   --radius: 8px;
+  --fuente: #2563eb; /* color de la fuente activa (lo fija app.js) */
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
   --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.1);
 }
@@ -75,8 +76,9 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 0 18px;
-  border-bottom: 1px solid #1e293b;
+  border-bottom: 3px solid var(--fuente);
   flex-shrink: 0;
+  transition: border-color 0.25s;
 }
 
 .topbar-brand {
@@ -89,7 +91,7 @@ body {
   width: 36px;
   height: 36px;
   border-radius: 9px;
-  background: linear-gradient(135deg, #2563eb, #1e3a8a);
+  background: linear-gradient(135deg, var(--fuente), #0f172a);
   border: 1px solid rgba(255, 255, 255, 0.14);
   display: flex;
   align-items: center;
@@ -1713,4 +1715,100 @@ div.tp-row:hover {
 .delete-file span {
   font-size: 11.5px;
   color: var(--text-muted);
+}
+
+/* ============================================================================
+   FUENTES DE DOCUMENTOS
+   ============================================================================ */
+.fuente-switch {
+  display: inline-flex;
+  margin-left: 10px;
+  padding: 3px;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 99px;
+}
+.fuente-btn {
+  border: 0;
+  background: transparent;
+  color: #cbd5e1;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: 99px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.fuente-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+.fuente-btn.active {
+  background: var(--c);
+  color: #fff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+}
+.fuente-btn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+}
+
+.pref-fuentes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.pref-fuente {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  color: var(--text-main);
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 12px;
+  border-radius: 99px;
+  cursor: pointer;
+}
+.pref-fuente .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--c);
+}
+.pref-fuente small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.pref-fuente.sel {
+  border-color: var(--c);
+  box-shadow: inset 0 0 0 1px var(--c);
+  font-weight: 600;
+}
+.pref-fuente-nueva {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.pref-fuente-nueva input {
+  width: 150px;
+}
+.fuente-edit {
+  border: 1px solid var(--border-color);
+  border-left: 4px solid var(--fuente-sel, var(--fuente));
+  border-radius: var(--radius);
+  padding: 12px 14px 10px;
+  margin-bottom: 14px;
+  background: #fafbfd;
+}
+.fuente-edit-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+.empty-action {
+  margin-top: 12px;
 }

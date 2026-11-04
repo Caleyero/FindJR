@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Esquema del índice de FinderJR (data/finder_index.db): archivos, documentos y su
-índice de texto completo (SQLite FTS5, insensible a acentos).
+Esquema del índice de FinderJR (data/finder_index_<fuente>.db, uno por fuente): archivos,
+documentos y su índice de texto completo (SQLite FTS5, insensible a acentos).
 """
 
+import os
 import sqlite3
+import threading
+from typing import Optional
 
-from . import etiquetas
-from .config import INDEX_DB_PATH, ensure_data_dir
+from . import config, etiquetas
+from .config import ensure_data_dir
 
 SCHEMA_VERSION = 2
 
@@ -71,15 +74,37 @@ END;
 _TABLAS_V1 = ("doc_entidad", "entidades", "alias", "nif_desconocidos")
 
 
-def get_conn() -> sqlite3.Connection:
+_INICIADAS: set = set()
+_INIT_LOCK = threading.Lock()
+
+
+def _abrir(fid: str) -> sqlite3.Connection:
     ensure_data_dir()
-    conn = sqlite3.connect(INDEX_DB_PATH, timeout=60.0, check_same_thread=False)
+    conn = sqlite3.connect(config.index_db_path(fid), timeout=60.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
-    etiquetas.attach(conn)  # etiquetas.db (manuales, fuera del índice regenerable) como «et»
+    etiquetas.attach(conn, fid)  # etiquetas_<fuente>.db (manuales, fuera del índice regenerable) como «et»
     return conn
+
+
+def get_conn(fid: Optional[str] = None) -> sqlite3.Connection:
+    """Conexión al índice de una fuente (por defecto, la activa), con su esquema garantizado."""
+    fid = fid or config.fuente_activa_id()
+    if fid not in _INICIADAS:
+        init_db(fid)
+    return _abrir(fid)
+
+
+def borrar_indice(fid: str) -> None:
+    """Elimina el índice (regenerable) de una fuente. Sus etiquetas no se tocan."""
+    with _INIT_LOCK:
+        _INICIADAS.discard(fid)
+        base = config.index_db_path(fid)
+        for suf in ("", "-wal", "-shm"):
+            if os.path.exists(base + suf):
+                os.remove(base + suf)
 
 
 def _drop_fts(conn: sqlite3.Connection) -> None:
@@ -112,8 +137,15 @@ def _migrate_v1(conn: sqlite3.Connection) -> None:
     conn.execute("VACUUM;")
 
 
-def init_db() -> None:
-    conn = get_conn()
+def init_db(fid: Optional[str] = None) -> None:
+    fid = fid or config.fuente_activa_id()
+    with _INIT_LOCK:
+        _init_db(fid)
+        _INICIADAS.add(fid)
+
+
+def _init_db(fid: str) -> None:
+    conn = _abrir(fid)
     ver = conn.execute("PRAGMA user_version;").fetchone()[0]
     if ver == 1:
         _migrate_v1(conn)

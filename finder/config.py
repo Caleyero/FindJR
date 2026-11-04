@@ -8,18 +8,26 @@ import json
 import os
 import re
 import threading
-from typing import Any, Dict, List
+import unicodedata
+from typing import Any, Dict, List, Optional
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(BASE_DIR, "finder_config.json")
-DATA_DIR = os.path.join(BASE_DIR, "data")
-INDEX_DB_PATH = os.path.join(DATA_DIR, "finder_index.db")
+# Índices (regenerables) y etiquetas (trabajo manual); las variables de entorno sirven para pruebas
+DATA_DIR = os.environ.get("FINDERJR_DATA_DIR") or os.path.join(BASE_DIR, "data")
+ETIQUETAS_DIR = os.environ.get("FINDERJR_ETIQUETAS_DIR") or BASE_DIR
+
+# Colores de acento de las fuentes (por orden de creación)
+COLORES_FUENTE = ["#0f766e", "#1d4ed8", "#7c3aed", "#b45309", "#be123c", "#4d7c0f"]
+
+# Valores de una fuente nueva. Carpetas (nombre de cualquier nivel) que no se indexan: excluded_dirs
+_FUENTE_BASE: Dict[str, Any] = {"biblioteca": "", "include_subfolders": True, "excluded_dirs": ["dbGes26_Backup"]}
+_LEGADO_BIBLIOTECA = r"C:\Users\ofici\Documents\Biblioteca"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "biblioteca": r"C:\Users\ofici\Documents\Biblioteca",
-    "include_subfolders": True,
-    # Carpetas (nombre de cualquier nivel) que no se indexan
-    "excluded_dirs": ["dbGes26_Backup"],
+    # Fuentes de documentos aisladas entre sí: [{id, nombre, color, biblioteca, include_subfolders, excluded_dirs}]
+    "fuentes": [],
+    "fuente_activa": "",
     "extensions": [".pdf"],
     "sync_interval_min": 10,
     "max_pages_text": 60,
@@ -52,8 +60,112 @@ def load_config() -> Dict[str, Any]:
         except Exception:
             pass
     else:
+        cfg.setdefault("biblioteca", _LEGADO_BIBLIOTECA)
+        _normalizar_fuentes(cfg)
+        save_config(cfg)
+        return cfg
+    if _normalizar_fuentes(cfg):
         save_config(cfg)
     return cfg
+
+
+# ------------------------------------------------------------------------------
+# Fuentes de documentos
+# ------------------------------------------------------------------------------
+
+def slug(nombre: str, usados: Optional[List[str]] = None) -> str:
+    """Identificador ASCII estable (se usa en los nombres de archivo del índice y las etiquetas)."""
+    s = unicodedata.normalize("NFKD", nombre or "").encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")[:30] or "fuente"
+    usados = usados or []
+    base, n = s, 2
+    while s in usados:
+        s = f"{base}_{n}"
+        n += 1
+    return s
+
+
+def nueva_fuente(cfg: Dict[str, Any], nombre: str, biblioteca: str = "") -> Dict[str, Any]:
+    nombre = " ".join((nombre or "").split())[:30]
+    if not nombre:
+        raise ValueError("El nombre de la fuente está vacío.")
+    fuentes = cfg.setdefault("fuentes", [])
+    if any(f["nombre"].lower() == nombre.lower() for f in fuentes):
+        raise ValueError(f"Ya existe una fuente llamada «{nombre}».")
+    usados = [f.get("color") for f in fuentes]
+    color = min(COLORES_FUENTE, key=lambda c: (usados.count(c), COLORES_FUENTE.index(c)))
+    f = json.loads(json.dumps(_FUENTE_BASE))
+    f.update(id=slug(nombre, [x["id"] for x in fuentes]), nombre=nombre, color=color, biblioteca=(biblioteca or "").strip())
+    fuentes.append(f)
+    return f
+
+
+def _normalizar_fuentes(cfg: Dict[str, Any]) -> bool:
+    """Migra la configuración de una sola Biblioteca a fuentes y completa campos. Devuelve si cambió."""
+    cambiado = False
+    if not isinstance(cfg.get("fuentes"), list) or not cfg["fuentes"]:
+        bib = str(cfg.get("biblioteca") or "").strip()
+        nombre = os.path.basename(bib.replace("\\", "/").rstrip("/")).strip() if bib else ""
+        nombre = (nombre[:1].upper() + nombre[1:]) if nombre else "Personal"
+        cfg["fuentes"] = []
+        f = nueva_fuente(cfg, nombre, bib)
+        f["include_subfolders"] = bool(cfg.get("include_subfolders", True))
+        if isinstance(cfg.get("excluded_dirs"), list):
+            f["excluded_dirs"] = cfg["excluded_dirs"]
+        nueva_fuente(cfg, "Profesional" if f["id"] != "profesional" else "Personal")
+        cfg["fuente_activa"] = f["id"]
+        cambiado = True
+    for k in ("biblioteca", "include_subfolders", "excluded_dirs"):
+        if k in cfg:
+            cfg.pop(k)
+            cambiado = True
+    for i, f in enumerate(cfg["fuentes"]):
+        for k, v in _FUENTE_BASE.items():
+            if k not in f:
+                f[k] = json.loads(json.dumps(v))
+                cambiado = True
+        if not f.get("color"):
+            f["color"] = COLORES_FUENTE[i % len(COLORES_FUENTE)]
+            cambiado = True
+    if cfg.get("fuente_activa") not in [f["id"] for f in cfg["fuentes"]]:
+        cfg["fuente_activa"] = cfg["fuentes"][0]["id"]
+        cambiado = True
+    return cambiado
+
+
+def fuente(cfg: Dict[str, Any], fid: Optional[str] = None) -> Dict[str, Any]:
+    """La fuente indicada o, sin id, la activa."""
+    fid = fid or cfg.get("fuente_activa")
+    for f in cfg.get("fuentes", []):
+        if f["id"] == fid:
+            return f
+    raise ValueError("La fuente no existe.")
+
+
+def fuente_activa_id() -> str:
+    return fuente(load_config())["id"]
+
+
+def index_db_path(fid: str) -> str:
+    return os.path.join(DATA_DIR, f"finder_index_{fid}.db")
+
+
+def etiquetas_db_path(fid: str) -> str:
+    return os.path.join(ETIQUETAS_DIR, f"etiquetas_{fid}.db")
+
+
+def migrar_archivos_legado() -> None:
+    """Una sola Biblioteca -> fuentes: el índice y las etiquetas existentes pasan a la primera fuente.
+    Se llama al arrancar, antes de abrir ninguna conexión."""
+    cfg = load_config()
+    fid = cfg["fuentes"][0]["id"]
+    pares = [(os.path.join(DATA_DIR, "finder_index.db"), index_db_path(fid)),
+             (os.path.join(ETIQUETAS_DIR, "etiquetas.db"), etiquetas_db_path(fid))]
+    for viejo, nuevo in pares:
+        if os.path.exists(viejo) and not os.path.exists(nuevo):
+            for suf in ("", "-wal", "-shm"):
+                if os.path.exists(viejo + suf):
+                    os.replace(viejo + suf, nuevo + suf)
 
 
 def save_config(cfg: Dict[str, Any]) -> None:
@@ -101,5 +213,5 @@ def ensure_data_dir() -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
 
 
-def excluded_dirs(cfg: Dict[str, Any]) -> List[str]:
-    return [str(x).strip().lower() for x in cfg.get("excluded_dirs", []) if str(x).strip()]
+def excluded_dirs(fte: Dict[str, Any]) -> List[str]:
+    return [str(x).strip().lower() for x in fte.get("excluded_dirs", []) if str(x).strip()]

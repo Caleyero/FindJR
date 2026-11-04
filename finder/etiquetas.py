@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Etiquetas manuales de FinderJR (etiquetas.db, en la raíz del proyecto).
+Etiquetas manuales de FinderJR (etiquetas_<fuente>.db en la raíz del proyecto: un catálogo
+independiente por cada fuente de documentos).
 
 Las pone siempre el usuario: el programa nunca etiqueta por su cuenta (ver la decisión 1 de
 CLAUDE.md). Viven en una base de datos aparte porque el índice (data/) se regenera; se vinculan
@@ -9,13 +10,11 @@ sobreviven a la reindexación y a la modificación del archivo. Si un archivo se
 renombra, sus etiquetas quedan huérfanas (no se ven) y reaparecen si vuelve a su ruta.
 """
 
-import os
 import sqlite3
 from typing import Any, Dict, Iterable, List, Optional
 
-from .config import BASE_DIR
+from . import config
 
-ETIQUETAS_DB_PATH = os.environ.get("FINDERJR_ETIQUETAS_DB") or os.path.join(BASE_DIR, "etiquetas.db")
 ALIAS = "et"
 
 # Paleta fija (texto blanco legible sobre todos)
@@ -47,8 +46,8 @@ def clave(ruta_rel: str) -> str:
     return (ruta_rel or "").replace("\\", "/")
 
 
-def attach(conn: sqlite3.Connection) -> None:
-    conn.execute(f"ATTACH DATABASE ? AS {ALIAS}", (ETIQUETAS_DB_PATH,))
+def attach(conn: sqlite3.Connection, fid: str) -> None:
+    conn.execute(f"ATTACH DATABASE ? AS {ALIAS}", (config.etiquetas_db_path(fid),))
     conn.execute(f"PRAGMA {ALIAS}.journal_mode=WAL;")
 
 

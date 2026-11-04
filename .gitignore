@@ -1,10 +1,10 @@
 # Indice y datos locales (se regeneran indexando la Biblioteca)
 data/
 
-# Etiquetas manuales del usuario (por puesto; NO se regeneran: hacer copia de seguridad)
-etiquetas.db
-etiquetas.db-wal
-etiquetas.db-shm
+# Etiquetas manuales del usuario, una base por fuente (por puesto; NO se regeneran: hacer copia de seguridad)
+etiquetas*.db
+etiquetas*.db-wal
+etiquetas*.db-shm
 
 # Configuracion local de cada puesto (ruta de la Biblioteca, anchos de paneles...)
 finder_config.json

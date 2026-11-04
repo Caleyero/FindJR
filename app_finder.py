@@ -35,9 +35,9 @@ if sys.stderr is None:
 
 import fitz  # PyMuPDF
 
-from finder import etiquetas, indexador
-from finder.config import BASE_DIR, load_config, save_config, to_display_path
-from finder.db import get_conn, init_db, meta_get
+from finder import config, etiquetas, indexador
+from finder.config import BASE_DIR, fuente, load_config, save_config, to_display_path
+from finder.db import borrar_indice, get_conn, init_db, meta_get
 from finder.extraccion import SEPARADOR_PAGINA
 
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -240,9 +240,102 @@ def query_info() -> Dict[str, Any]:
                   (SELECT COUNT(*) FROM archivos WHERE necesita_ocr = 1) AS sin_texto""").fetchone())
     ultima = meta_get(conn, "ultima_sync")
     conn.close()
-    fi = indexador.folder_info()
+    cfg = load_config()
+    fte = fuente(cfg)
+    fi = indexador.folder_info(fte["id"])
     return {"stats": stats, "ultima_sync": ultima, "folder_display": fi["display"], "folder_exists": fi["exists"],
-            "ui_layout": load_config().get("ui_layout", {}), "estado": indexador.get_state()}
+            "folder_configurada": fi["configurada"], "ui_layout": cfg.get("ui_layout", {}),
+            "estado": indexador.get_state(), "fuente": _fuente_publica(fte), "fuentes": fuentes_listar()["items"]}
+
+
+# ------------------------------------------------------------------------------
+# Fuentes de documentos (cada una con su índice y sus etiquetas)
+# ------------------------------------------------------------------------------
+
+class FuenteCambiada(Exception):
+    """La pestaña trabaja con una fuente que ya no es la activa (se cambió en otra pestaña)."""
+
+
+def _fuente_publica(fte: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: fte.get(k) for k in ("id", "nombre", "color")}
+
+
+def fuentes_listar() -> Dict[str, Any]:
+    cfg = load_config()
+    items = []
+    for f in cfg["fuentes"]:
+        fi = indexador.folder_info(f["id"])
+        total = 0
+        if os.path.exists(config.index_db_path(f["id"])):
+            try:
+                conn = get_conn(f["id"])
+                try:
+                    total = conn.execute("SELECT COUNT(*) FROM documentos").fetchone()[0]
+                finally:
+                    conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+        items.append(dict(f, folder_display=fi["display"], existe=fi["exists"], total_docs=total))
+    return {"activa": cfg["fuente_activa"], "items": items}
+
+
+def fuente_activar(fid: str) -> Dict[str, Any]:
+    cfg = load_config()
+    fuente(cfg, fid)  # valida
+    if cfg["fuente_activa"] != fid:
+        cfg["fuente_activa"] = fid
+        save_config(cfg)
+    indexador.start_sync_async(esperar=True, fid=fid)
+    return query_info()
+
+
+def fuente_crear(payload: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = load_config()
+    f = config.nueva_fuente(cfg, str(payload.get("nombre", "")), str(payload.get("biblioteca", "")))
+    save_config(cfg)
+    if f["biblioteca"]:
+        indexador.start_sync_async(esperar=True, fid=f["id"])
+    return f
+
+
+def fuente_modificar(fid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = load_config()
+    f = fuente(cfg, fid)
+    if "nombre" in payload:
+        nombre = " ".join(str(payload["nombre"] or "").split())[:30]
+        if not nombre:
+            raise ValueError("El nombre de la fuente está vacío.")
+        if any(x["id"] != fid and x["nombre"].lower() == nombre.lower() for x in cfg["fuentes"]):
+            raise ValueError(f"Ya existe una fuente llamada «{nombre}».")
+        f["nombre"] = nombre
+    if "biblioteca" in payload:
+        f["biblioteca"] = str(payload["biblioteca"] or "").strip()
+    if "include_subfolders" in payload:
+        f["include_subfolders"] = bool(payload["include_subfolders"])
+    if isinstance(payload.get("excluded_dirs"), list):
+        f["excluded_dirs"] = [str(x).strip() for x in payload["excluded_dirs"] if str(x).strip()]
+    save_config(cfg)
+    indexador.start_sync_async(esperar=True, fid=fid)
+    return f
+
+
+def fuente_quitar(fid: str) -> Dict[str, Any]:
+    """Quita una fuente: borra su índice (regenerable) y conserva su archivo de etiquetas."""
+    if not indexador._SYNC_LOCK.acquire(timeout=5):
+        raise ValueError("Hay una sincronización en curso. Inténtalo de nuevo en cuanto termine.")
+    try:
+        cfg = load_config()
+        f = fuente(cfg, fid)
+        if fid == cfg["fuente_activa"]:
+            raise ValueError("No se puede quitar la fuente activa: cambia antes a otra.")
+        if len(cfg["fuentes"]) <= 1:
+            raise ValueError("Tiene que quedar al menos una fuente.")
+        cfg["fuentes"] = [x for x in cfg["fuentes"] if x["id"] != fid]
+        save_config(cfg)
+        borrar_indice(fid)
+        return {"status": "ok", "nombre": f["nombre"], "etiquetas": os.path.basename(config.etiquetas_db_path(fid))}
+    finally:
+        indexador._SYNC_LOCK.release()
 
 
 def get_doc(doc_id: int) -> Optional[Dict[str, Any]]:
@@ -425,9 +518,11 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/search":
                 return self.send_json(query_documents(params))
             if route == "/api/status":
-                return self.send_json(indexador.get_state())
+                return self.send_json(dict(indexador.get_state(), activa=config.fuente_activa_id()))
             if route == "/api/config":
                 return self.send_json({"config": load_config(), "folder": indexador.folder_info()})
+            if route == "/api/fuentes":
+                return self.send_json(fuentes_listar())
             if route == "/api/etiquetas":
                 return self.send_json(etiquetas_listar())
 
@@ -450,10 +545,11 @@ class Handler(BaseHTTPRequestHandler):
 
             if route == "/api/export/csv":
                 ts = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-                return self.send_bytes(csv_export(params), "text/csv; charset=utf-8", f"FinderJR_{ts}.csv", inline=False)
+                fid = config.fuente_activa_id()
+                return self.send_bytes(csv_export(params), "text/csv; charset=utf-8", f"FinderJR_{fid}_{ts}.csv", inline=False)
             if route == "/api/export/pdf_bundle":
                 ts = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-                return self.send_bytes(pdf_bundle(params), "application/pdf", f"FinderJR_seleccion_{ts}.pdf", inline=False)
+                return self.send_bytes(pdf_bundle(params), "application/pdf", f"FinderJR_{config.fuente_activa_id()}_{ts}.pdf", inline=False)
 
             if route in ("/", "/index.html"):
                 target = os.path.join(STATIC_DIR, "index.html")
@@ -480,6 +576,15 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self._end()
 
+    def _comprobar_fuente(self, payload: Dict[str, Any]) -> str:
+        """Las operaciones que modifican algo indican la fuente con la que trabaja la pestaña; si ya no es
+        la activa (se cambió en otra pestaña), se rechazan para no tocar la fuente equivocada."""
+        activa = config.fuente_activa_id()
+        pedida = self.headers.get("X-FinderJR-Fuente") or payload.get("fuente")
+        if pedida and pedida != activa:
+            raise FuenteCambiada()
+        return activa
+
     def do_POST(self) -> None:
         global CLIENT_EVER_CONNECTED, LAST_CLIENT_LEFT_AT
         self._begin()
@@ -503,6 +608,19 @@ class Handler(BaseHTTPRequestHandler):
                         ACTIVE_CLIENTS[cid] = now
                         LAST_CLIENT_LEFT_AT = None
                 return self.send_json({"status": "ok"})
+
+            if route == "/api/fuente/activar":
+                return self.send_json(fuente_activar(str(payload.get("id", ""))))
+            if route == "/api/fuentes":
+                return self.send_json(fuente_crear(payload))
+            m = re.match(r"^/api/fuentes/([a-z0-9_]+)(/borrar)?$", route)
+            if m:
+                if m.group(2):
+                    return self.send_json(fuente_quitar(m.group(1)))
+                return self.send_json(fuente_modificar(m.group(1), payload))
+
+            if route.startswith(("/api/sync", "/api/open_location", "/api/etiquet", "/api/doc/")):
+                self._comprobar_fuente(payload)
 
             if route == "/api/sync":
                 started = indexador.start_sync_async(force_reindex=bool(payload.get("force_reindex")))
@@ -564,24 +682,20 @@ class Handler(BaseHTTPRequestHandler):
                 save_config(cfg)
                 return self.send_json({"status": "ok", "ui_layout": lay})
 
-            if route == "/api/config":
+            if route == "/api/config":  # ajustes globales (las carpetas van en /api/fuentes/<id>)
                 cfg = load_config()
-                if str(payload.get("biblioteca", "")).strip():
-                    cfg["biblioteca"] = str(payload["biblioteca"]).strip()
-                if "include_subfolders" in payload:
-                    cfg["include_subfolders"] = bool(payload["include_subfolders"])
-                if isinstance(payload.get("excluded_dirs"), list):
-                    cfg["excluded_dirs"] = [str(x).strip() for x in payload["excluded_dirs"] if str(x).strip()]
                 if "sync_interval_min" in payload:
                     try:
                         cfg["sync_interval_min"] = max(1, min(240, int(payload["sync_interval_min"])))
                     except Exception:  # noqa: BLE001
                         pass
                 save_config(cfg)
-                started = indexador.start_sync_async()
-                return self.send_json({"status": "ok", "started": started})
+                return self.send_json({"status": "ok"})
 
             self.send_json({"error": "Endpoint POST no válido"}, status=404)
+        except FuenteCambiada:
+            self.send_json({"error": "La fuente activa ha cambiado en otra pestaña: se recarga esta.",
+                            "fuente_cambiada": True}, status=409)
         except ValueError as e:
             self.send_json({"error": str(e)}, status=400)
         except Exception as e:  # noqa: BLE001
@@ -633,6 +747,7 @@ def main() -> None:
         if "--no-browser" not in sys.argv:
             webbrowser.open(url)
         return
+    config.migrar_archivos_legado()  # una sola Biblioteca -> fuentes (renombra índice y etiquetas)
     init_db()
     server = FinderHTTPServer(("127.0.0.1", port), Handler)
     SERVER_READY_AT = time.monotonic()

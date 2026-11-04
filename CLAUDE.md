@@ -5,7 +5,8 @@ leyendo el código: decisiones tomadas, su porqué y convenciones.
 
 ## Qué es
 
-Buscador local de texto completo sobre la carpeta **Biblioteca** (`C:\Users\ofici\Documents\Biblioteca`):
+Buscador local de texto completo sobre una o varias **fuentes** de documentos (carpetas aisladas entre sí;
+en el puesto original, la **Biblioteca** `C:\Users\ofici\Documents\Biblioteca`):
 ~14.500 archivos (9,5 GB), ~13.900 PDF (facturas, contratos, escrituras, modelos AEAT…) que crece a diario.
 Se usa solo en el PC del usuario, con un favorito a `http://localhost:8766/`.
 
@@ -38,14 +39,32 @@ Se usa solo en el PC del usuario, con un favorito a `http://localhost:8766/`.
 
 ```
 app_finder.py          Servidor HTTP + API REST + motor de búsqueda (parse_search/run_query)
-finder/config.py       finder_config.json (por puesto, en .gitignore) y conversión de rutas Windows <-> WSL
-finder/db.py           Esquema SQLite (data/finder_index.db), FTS5, migraciones por PRAGMA user_version
+finder/config.py       finder_config.json (por puesto, en .gitignore), fuentes y conversión de rutas Windows <-> WSL
+finder/db.py           Esquema SQLite (data/finder_index_<fuente>.db), FTS5, migraciones por PRAGMA user_version
 finder/extraccion.py   Texto con PyMuPDF (máx. max_pages_text páginas y 400.000 caracteres)
 finder/indexador.py    Sincronización incremental en paralelo + bucle en segundo plano
-finder/etiquetas.py    Etiquetas manuales (etiquetas.db, adjunta como «et» en cada conexión)
+finder/etiquetas.py    Etiquetas manuales (etiquetas_<fuente>.db, adjunta como «et» en cada conexión)
 static/                index.html, app.js, styles.css (estilo cBank)
 tools/probar_api.py    Prueba de humo contra el servidor en marcha
 ```
+
+### Fuentes (`config.fuente`, `/api/fuentes`, noviembre 2026, a petición del usuario)
+- Uso personal y profesional (o más) **totalmente aislados**: cada fuente tiene carpeta, exclusiones,
+  índice `data/finder_index_<id>.db` y etiquetas `etiquetas_<id>.db` propios. El aislamiento es físico
+  (archivos SQLite distintos), no un filtro: ninguna consulta puede mezclar fuentes.
+- `finder_config.json`: `fuentes: [{id, nombre, color, biblioteca, include_subfolders, excluded_dirs}]` y
+  `fuente_activa`. El `id` (slug ASCII) es estable y da nombre a los archivos; el `nombre` se puede cambiar.
+  `extensions`, `max_pages_text` y `sync_interval_min` son globales.
+- Migración (`_normalizar_fuentes` + `migrar_archivos_legado`, al arrancar): la antigua `biblioteca` pasa a
+  ser la primera fuente (nombre = carpeta) y sus `finder_index.db`/`etiquetas.db` se renombran a esa fuente;
+  se añade otra «Profesional» (o «Personal») vacía.
+- La fuente activa es **global en el servidor** (un usuario, un puesto): `get_conn()` sin argumento usa la
+  activa, así que URLs de PDF, CSV y unión no llevan fuente (el cliente añade `&f=` solo para la caché).
+  Las operaciones que modifican (`/api/doc/*`, `/api/etiquet*`, `/api/sync`, `/api/open_location`) llevan
+  la cabecera `X-FinderJR-Fuente`; si no coincide con la activa → 409 y la pestaña se pone al día.
+- `background_loop` sincroniza todas las fuentes (la activa primero). Una fuente sin carpeta o con la
+  carpeta inaccesible **no** se sincroniza (antes se vaciaba el índice entero). Quitar una fuente borra su
+  índice y conserva `etiquetas_<id>.db` (si se recrea con el mismo nombre, las recupera).
 
 ### Índice (`finder/db.py`, `SCHEMA_VERSION = 2`)
 - `archivos`: un registro por archivo físico (ruta, size, mtime, páginas, `necesita_ocr`, estado OK/ERROR).
@@ -58,8 +77,8 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
 - `sin_texto`/`necesita_ocr` = texto extraído < 60 caracteres (escaneados, ~1.100 PDF).
 
 ### Etiquetas (`finder/etiquetas.py`)
-- Base de datos **aparte** (`etiquetas.db` en la raíz; `FINDERJR_ETIQUETAS_DB` la cambia para pruebas)
-  porque `data/` se regenera. `get_conn` la adjunta con `ATTACH ... AS et`; `init_db` crea su esquema.
+- Base de datos **aparte** y una por fuente (`etiquetas_<id>.db` en la raíz; `FINDERJR_ETIQUETAS_DIR` cambia
+  la carpeta para pruebas) porque `data/` se regenera. `get_conn` la adjunta con `ATTACH ... AS et`.
 - Tablas `et.etiquetas` (nombre único sin mayúsculas, color de `PALETA`, `tecla` 1-9 única opcional) y
   `et.doc_etiqueta` (`ruta_rel`, `etiqueta_id`). La clave es `ruta_rel` con `/` (`CLAVE_DOC` normaliza
   la del índice), así sobrevive a reindexar y a modificar el archivo; mover/renombrar la deja huérfana.
@@ -94,7 +113,7 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
   Se rechazan unidades de red/UNC (`GetDriveTypeW == DRIVE_REMOTE`): allí Windows borraría sin Papelera.
 - Bajo `_SYNC_LOCK`; comprueba que el archivo ya no existe antes de borrar la fila de `archivos`
   (documentos y FTS en cascada). Archivo abierto en otro programa = código 32 → mensaje claro.
-- Las etiquetas se conservan en `etiquetas.db` (huérfanas): si se restaura, se recuperan.
+- Las etiquetas se conservan en `etiquetas_<fuente>.db` (huérfanas): si se restaura, se recuperan.
 - UI: botón papelera / Supr → modal con foco en «Cancelar»; tras borrar se selecciona el siguiente.
 
 ### Búsqueda (`app_finder.py`)
@@ -111,11 +130,13 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
 
 ### API
 GET `/api/info`, `/api/search`, `/api/status`, `/api/config`, `/api/doc/<id>[/pdf|/page_image]`,
-`/api/export/csv`, `/api/export/pdf_bundle` (une hasta 300 PDF filtrados), `/api/etiquetas` (con recuentos).
+`/api/export/csv`, `/api/export/pdf_bundle` (une hasta 300 PDF filtrados), `/api/etiquetas` (con recuentos),
+`/api/fuentes`.
 POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en el archivo),
 `/api/layout` (guarda anchos de paneles en `finder_config.json`), `/api/config`,
 `/api/etiquetas` (crear), `/api/etiquetas/<id>` (nombre/color/tecla), `/api/etiquetas/<id>/borrar`,
-`/api/etiquetar` (`etiqueta_id`, `accion` poner|quitar, `doc_ids` o `busqueda`), `/api/doc/<id>/renombrar`, `/api/doc/<id>/eliminar`.
+`/api/etiquetar` (`etiqueta_id`, `accion` poner|quitar, `doc_ids` o `busqueda`), `/api/doc/<id>/renombrar`, `/api/doc/<id>/eliminar`,
+`/api/fuente/activar {id}`, `/api/fuentes` (crear), `/api/fuentes/<id>` (modificar), `/api/fuentes/<id>/borrar`.
 
 ### Ciclo de vida del proceso
 - Por defecto (`iniciar_finderjr.bat` con doble clic) abre el navegador y **se apaga solo** al cerrar la
@@ -136,7 +157,9 @@ POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en 
 - **No arrancar `app_finder.py` desde WSL sobre el índice real**: `background_loop` sincroniza al
   arrancar y reescribe el índice con rutas de WSL (y, sin PyMuPDF, deja todo en ERROR; pasó en noviembre
   de 2026). Para probar, levantar solo `FinderHTTPServer` sin el bucle (como `tools/probar_api.py`),
-  a ser posible sobre una copia del índice y con `FINDERJR_ETIQUETAS_DB` apuntando a un archivo temporal.
+  a ser posible sobre una copia: parchear `config.CONFIG_PATH`, `config.DATA_DIR` y `config.ETIQUETAS_DIR`
+  (o `FINDERJR_DATA_DIR`/`FINDERJR_ETIQUETAS_DIR`). Con el Python de Windows (PyMuPDF real) el script de
+  prueba **necesita** `if __name__ == "__main__":`: los procesos de extracción (spawn) lo reimportan.
 - Capturas de pantalla: el MCP de puppeteer y el Chromium de Playwright en WSL no funcionan (faltan
   bibliotecas). Sí funciona el Chrome de Windows en headless con `--remote-debugging-port=9333`
   (WSL en red espejo ve `127.0.0.1`) + `playwright-core` (`chromium.connectOverCDP`).
@@ -156,7 +179,7 @@ POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en 
 - Git: `menu.bat` (estado, bajar, subir, vincular). Remoto: `https://github.com/Caleyero/FindJR.git`.
   `subir.bat` hace add + commit + push, sin versionado ni changelog (a diferencia de CVS-Web).
 - Fuera del repo (`.gitignore`): `data/` (índice, ~180 MB, se regenera), `finder_config.json` (por puesto)
-  y `etiquetas.db` (trabajo manual del usuario: **no** se regenera, debe ir en las copias de seguridad).
+  y `etiquetas_*.db` (trabajo manual del usuario: **no** se regenera, debe ir en las copias de seguridad).
 
 ## Proyectos relacionados (misma carpeta `Documents\Python`)
 

@@ -142,6 +142,7 @@
         <h1 class="brand-title">FinderJR · Biblioteca documental</h1>
         <p class="brand-subtitle" id="folderStatusText">Cargando Biblioteca...</p>
       </div>
+      <div class="fuente-switch" id="fuenteSwitch" role="tablist" aria-label="Fuente de documentos"></div>
     </div>
 
     <div class="topbar-actions">
@@ -159,7 +160,7 @@
       <button class="btn btn-primary" id="btnExportPdfBundle" title="Generar un único PDF con los documentos encontrados (máx. 300)">
         <svg class="icon"><use href="#ico-layers"></use></svg> Unir resultados en 1 PDF
       </button>
-      <button class="btn btn-outline" id="btnOpenPrefs" title="Carpeta de la Biblioteca y exclusiones">
+      <button class="btn btn-outline" id="btnOpenPrefs" title="Fuentes de documentos, carpetas y exclusiones">
         <svg class="icon"><use href="#ico-settings"></use></svg> Preferencias
       </button>
     </div>
@@ -393,8 +394,20 @@
       </div>
       <div class="modal-body">
         <div class="form-group">
-          <label for="prefBiblioteca"><svg class="icon icon-label"><use href="#ico-folder"></use></svg> Carpeta de la Biblioteca</label>
-          <input type="text" id="prefBiblioteca" placeholder="C:\Users\...\Biblioteca" />
+          <label><svg class="icon icon-label"><use href="#ico-layers"></use></svg> Fuentes de documentos</label>
+          <div class="pref-fuentes" id="prefFuentesTabs"></div>
+          <small class="form-help">Cada fuente tiene su carpeta, su índice y sus etiquetas: los resultados nunca se mezclan. Alt+1, Alt+2… cambia de fuente.</small>
+        </div>
+
+        <div class="fuente-edit" id="prefFuenteBox">
+        <div class="form-group">
+          <label for="prefFuenteNombre">Nombre</label>
+          <input type="text" id="prefFuenteNombre" maxlength="30" />
+        </div>
+
+        <div class="form-group">
+          <label for="prefBiblioteca"><svg class="icon icon-label"><use href="#ico-folder"></use></svg> Carpeta de documentos</label>
+          <input type="text" id="prefBiblioteca" placeholder="C:\Users\...\Documentos" />
           <small class="form-help" id="prefFolderStatus">Ruta local o de red de la carpeta de documentos.</small>
         </div>
 
@@ -402,10 +415,6 @@
           <label class="checkbox-label">
             <input type="checkbox" id="prefIncludeSubfolders" checked />
             Incluir subcarpetas
-          </label>
-          <label class="checkbox-label">
-            Sincronizar cada
-            <input type="number" id="prefInterval" min="1" max="240" style="width: 64px;" /> minutos
           </label>
         </div>
 
@@ -420,10 +429,23 @@
           </div>
           <small class="form-help">Cualquier carpeta con ese nombre, a cualquier nivel, se ignora.</small>
         </div>
+        <div class="fuente-edit-foot">
+          <button type="button" class="btn btn-sm btn-outline btn-delete" id="btnQuitarFuente">
+            <svg class="icon"><use href="#ico-trash"></use></svg> Quitar esta fuente
+          </button>
+        </div>
+        </div>
+
+        <div class="form-row-checks">
+          <label class="checkbox-label">
+            Sincronizar todas las fuentes cada
+            <input type="number" id="prefInterval" min="1" max="240" style="width: 64px;" /> minutos
+          </label>
+        </div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-outline" id="btnReindexAll" style="margin-right: auto;" title="Volver a leer todos los documentos desde cero (unos minutos)">
-          <svg class="icon"><use href="#ico-refresh"></use></svg> Reindexar todo
+        <button class="btn btn-outline" id="btnReindexAll" style="margin-right: auto;" title="Volver a leer desde cero todos los documentos de la fuente activa (unos minutos)">
+          <svg class="icon"><use href="#ico-refresh"></use></svg> Reindexar la fuente activa
         </button>
         <button class="btn btn-outline" id="btnCancelPrefs">Cancelar</button>
         <button class="btn btn-primary" id="btnSavePrefs"><svg class="icon"><use href="#ico-save"></use></svg> Guardar y sincronizar</button>
