@@ -88,6 +88,35 @@ function fmtNum(n) {
   return Number(n || 0).toLocaleString("es-ES");
 }
 
+// Tipo de documento por la extensión: los PDF tienen vista de página; Word y Excel, solo texto
+function extDe(nombre) {
+  const m = /\.([^.\\/]+)$/.exec(nombre || "");
+  return m ? m[1].toLowerCase() : "";
+}
+
+function esPdf(doc) {
+  return extDe(doc.nombre) === "pdf";
+}
+
+function esExcel(doc) {
+  return ["xlsx", "xlsm"].includes(extDe(doc.nombre));
+}
+
+// «3 págs.» o, en un Excel, «3 hojas»
+function fmtPaginas(doc, corto = true) {
+  const n = doc.num_paginas || 1;
+  if (esExcel(doc)) return n === 1 ? "1 hoja" : `${n} hojas`;
+  return n === 1 ? "1 pág." : `${n} ${corto ? "págs." : "pág."}`;
+}
+
+// Etiqueta de tipo para las filas que no son PDF
+function tipoBadge(doc) {
+  const ext = extDe(doc.nombre);
+  if (ext === "pdf") return "";
+  const cls = esExcel(doc) ? "tipo-excel" : "tipo-word";
+  return `<span class="tipo-badge ${cls}" title="Documento de ${esExcel(doc) ? "Excel" : "Word"}">${ext.toUpperCase()}</span>`;
+}
+
 function fmtSize(bytes) {
   if (!bytes) return "—";
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -214,7 +243,7 @@ async function runSearch(resetOffset = true, opts = {}) {
     } else if (actual && opts.keepPreview) {
       if (state.selectedDoc) state.selectedDoc.etiquetas = actual.etiquetas || [];
       renderPreviewTags();
-    } else if (state.selectedDoc && state.activeTab !== "pdf") {
+    } else if (state.selectedDoc && (state.activeTab !== "pdf" || !esPdf(state.selectedDoc))) {
       updatePreviewPane();
     }
   } catch (err) {
@@ -254,7 +283,7 @@ function renderGridRows() {
   tbody.innerHTML = state.items
     .map((it) => {
       const sel = it.id === state.selectedDocId ? "selected" : "";
-      const pags = it.num_paginas > 1 ? `${it.num_paginas} págs.` : "1 pág.";
+      const pags = fmtPaginas(it);
       const ocr = it.sin_texto ? `<span class="ocr-badge" title="Escaneado sin capa de texto: solo se encuentra por nombre y carpeta">OCR</span>` : "";
       const copias = it.copias
         ? `<span class="copias-badge" title="Hay ${it.copias} ${it.copias === 1 ? "copia idéntica" : "copias idénticas"} en otras rutas (no se muestran aparte). Clic para revisarlas">+${it.copias}</span>`
@@ -274,7 +303,7 @@ function renderGridRows() {
           <td class="cell-check"><input type="checkbox" class="row-check" ${chk ? "checked" : ""} /></td>
           <td>
             <div class="date-cell">${formatDateFromEpoch(it.mtime)}</div>
-            <span class="date-sub">${pags}</span>${ocr}${copias}
+            <span class="date-sub">${pags}</span>${tipoBadge(it)}${ocr}${copias}
           </td>
           <td>
             <div class="doc-name" title="Doble clic para cambiar el nombre">${highlightText(it.nombre, terms)}</div>
@@ -333,7 +362,7 @@ async function selectDocument(docId, scrollIntoView = true) {
     document.getElementById("prevTitle").title = "Doble clic para cambiar el nombre";
     document.getElementById("prevSubtitle").textContent = [
       `Modificado ${formatDateFromEpoch(doc.mtime)}`,
-      `${doc.num_paginas} pág.`,
+      fmtPaginas(doc, false),
       doc.ruta_rel,
     ].join("  ·  ");
     renderPreviewTags();
@@ -341,7 +370,13 @@ async function selectDocument(docId, scrollIntoView = true) {
     document.getElementById("previewToolbar").style.display = "flex";
     document.getElementById("previewPlaceholder").style.display = "none";
     document.getElementById("btnDownloadSinglePdf").href = `/api/doc/${doc.id}/pdf?download=1${fuenteQuery()}`;
-    document.getElementById("btnOpenNewTab").href = `/api/doc/${doc.id}/pdf?${fuenteQuery().slice(1)}`;
+    const pdf = esPdf(doc);
+    const btnAbrir = document.getElementById("btnOpenNewTab");
+    btnAbrir.href = `/api/doc/${doc.id}/pdf?${fuenteQuery().slice(1)}`;
+    btnAbrir.style.display = pdf ? "" : "none";
+    const btnApp = document.getElementById("btnOpenApp");
+    btnApp.style.display = pdf ? "none" : "";
+    btnApp.title = `Abrir con ${esExcel(doc) ? "Excel" : "Word"} (o el programa predeterminado de Windows)`;
     updatePreviewPane();
   } catch (err) {
     console.error("Error cargando el documento:", err);
@@ -357,7 +392,17 @@ function updatePreviewPane() {
   const bar = document.getElementById("multipageBar");
   paneHighlight.style.display = panePdf.style.display = paneText.style.display = "none";
 
-  if (state.activeTab === "highlight") {
+  // Word y Excel solo tienen la vista de texto; se recuerda la pestaña elegida para el siguiente PDF
+  const pdf = esPdf(doc);
+  const tab = pdf ? state.activeTab : "text";
+  document.querySelectorAll(".view-tabs .tab-btn").forEach((b) => {
+    const soloPdf = b.dataset.tab !== "text";
+    b.disabled = soloPdf && !pdf;
+    b.title = b.disabled ? "Solo disponible en los PDF" : b.dataset.titulo || b.title;
+    b.classList.toggle("active", b.dataset.tab === tab);
+  });
+
+  if (tab === "highlight") {
     paneHighlight.style.display = "block";
     bar.style.display = "flex";
     document.getElementById("docPageIndicator").textContent = `Página ${state.currentDocPage} de ${doc.num_paginas}`;
@@ -365,7 +410,7 @@ function updatePreviewPane() {
     document.getElementById("btnNextDocPage").disabled = state.currentDocPage >= doc.num_paginas;
     document.getElementById("highlightImg").src = `/api/doc/${doc.id}/page_image?page=${state.currentDocPage}${termsQuery()}`;
     applyZoom();
-  } else if (state.activeTab === "pdf") {
+  } else if (tab === "pdf") {
     panePdf.style.display = "block";
     bar.style.display = "none";
     const iframe = document.getElementById("pdfIframe");
@@ -377,10 +422,11 @@ function updatePreviewPane() {
     document.getElementById("docMetadataGrid").innerHTML = `
       <div class="meta-item"><strong>Archivo</strong>${escapeHtml(doc.nombre)}</div>
       <div class="meta-item"><strong>Modificado</strong>${formatDateFromEpoch(doc.mtime)}</div>
-      <div class="meta-item"><strong>Páginas / tamaño</strong>${doc.num_paginas} · ${fmtSize(doc.size)}</div>
+      <div class="meta-item"><strong>${esExcel(doc) ? "Hojas" : "Páginas"} / tamaño</strong>${doc.num_paginas} · ${fmtSize(doc.size)}</div>
       <div class="meta-item"><strong>Texto</strong>${doc.necesita_ocr ? "<span class='ocr-badge'>Escaneado sin capa de texto</span>" : "Sí"}</div>
       <div class="meta-item" style="grid-column: 1 / -1;"><strong>Ruta</strong>${escapeHtml(doc.ruta_display)}</div>`;
-    const txt = doc.texto || (doc.necesita_ocr ? "(Documento escaneado sin capa de texto: pendiente de OCR)" : "");
+    const txt = doc.texto || (doc.necesita_ocr ? "(Documento escaneado sin capa de texto: pendiente de OCR)"
+      : !pdf ? "(El documento no contiene texto: puede que solo tenga imágenes)" : "");
     document.getElementById("extractedTextBox").innerHTML = highlightText(txt, state.terms);
   }
 }
@@ -731,9 +777,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Pestañas y navegación del visor
   document.querySelectorAll(".view-tabs .tab-btn").forEach((btn) => {
+    btn.dataset.titulo = btn.title;
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".view-tabs .tab-btn").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
+      if (btn.disabled) return;
       state.activeTab = btn.dataset.tab;
       updatePreviewPane();
     });
@@ -770,6 +816,18 @@ document.addEventListener("DOMContentLoaded", async () => {
       body: JSON.stringify({ doc_id: state.selectedDocId }),
     });
     if (!r.ok) showToast("No se ha podido abrir la carpeta del documento.");
+  });
+  document.getElementById("btnOpenApp").addEventListener("click", async () => {
+    if (!state.selectedDocId) return;
+    const r = await fetch("/api/open_file", {
+      method: "POST",
+      headers: postHeaders(),
+      body: JSON.stringify({ doc_id: state.selectedDocId }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      showToast(err.error || "No se ha podido abrir el documento.");
+    }
   });
 
   // Teclado: ↑ / ↓ recorre, 1-9 pone/quita etiquetas, Esc cierra el menú o desmarca
@@ -1474,10 +1532,10 @@ function applyRenamed(doc) {
     document.getElementById("prevTitle").textContent = doc.nombre;
     document.getElementById("prevSubtitle").textContent = [
       `Modificado ${formatDateFromEpoch(doc.mtime)}`,
-      `${doc.num_paginas} pág.`,
+      fmtPaginas(state.selectedDoc, false),
       doc.ruta_rel,
     ].join("  ·  ");
-    if (state.activeTab === "text") updatePreviewPane();
+    if (state.activeTab === "text" || !esPdf(state.selectedDoc)) updatePreviewPane();
   }
 }
 

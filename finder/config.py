@@ -28,7 +28,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Fuentes de documentos aisladas entre sí: [{id, nombre, color, biblioteca, include_subfolders, excluded_dirs}]
     "fuentes": [],
     "fuente_activa": "",
-    "extensions": [".pdf"],
+    "extensions": [".pdf", ".docx", ".xlsx"],
     "sync_interval_min": 10,
     "max_pages_text": 60,
     "ui_layout": {

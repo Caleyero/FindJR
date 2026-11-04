@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import duplicados, etiquetas
 from .config import excluded_dirs, fuente, load_config, to_display_path, to_local_path
 from .db import get_conn, init_db, meta_set
-from .extraccion import extract_pdf_text
+from .extraccion import es_pdf, extract_text
 
 _SYNC_LOCK = threading.Lock()
 _STATE_LOCK = threading.Lock()
@@ -84,7 +84,7 @@ def discover(cfg: Dict[str, Any], fte: Dict[str, Any]) -> List[Tuple[str, str, i
 def _extract_worker(args: Tuple[str, int]) -> Dict[str, Any]:
     path, max_pages = args
     try:
-        paginas, texto = extract_pdf_text(path, max_pages)
+        paginas, texto = extract_text(path, max_pages)
         return {"ok": True, "paginas": paginas, "texto": texto}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
@@ -125,7 +125,8 @@ def _store(conn, item: Tuple[str, str, int, float], er: Dict[str, Any], prev_id:
     _quitar_previo(conn, prev_id)
     ok = er.get("ok")
     texto = er.get("texto", "") if ok else ""
-    sin_texto = 1 if len(texto.strip()) < 60 else 0
+    # Solo un PDF casi sin texto es un escaneado pendiente de OCR (un Word o Excel corto es solo corto)
+    sin_texto = 1 if es_pdf(nombre) and len(texto.strip()) < 60 else 0
     paginas = er.get("paginas", 0) if ok else 0
     cur = conn.execute(
         """INSERT INTO archivos (ruta, ruta_rel, carpeta, nombre, ext, size, mtime, paginas, necesita_ocr, estado, error,

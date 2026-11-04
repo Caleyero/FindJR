@@ -33,7 +33,10 @@ Se usa solo en el PC del usuario, con un favorito a `http://localhost:8766/`.
    puerto propio, `--server` con `0.0.0.0`…) y el usuario lo **descartó** por simplicidad. En su lugar:
    arranque automático al iniciar sesión en Windows en segundo plano permanente
    (`arranque_automatico.ps1`, opciones 10-13 de `menu.bat`). Escucha solo en `127.0.0.1`.
-5. **Solo PDF de momento** (`extensions: [".pdf"]`). Hay ~430 Office (doc/docx/xls/xlsx) pendientes.
+5. **PDF, .docx y .xlsx** (`extensions: [".pdf", ".docx", ".xlsx"]`, noviembre 2026, a petición del usuario).
+   Word y Excel se leen con `zipfile` + `ElementTree` de la stdlib (son ZIP con XML), **sin dependencias
+   nuevas**; PyMuPDF no abre Office (solo la versión Pro). `.docm`/`.xlsm` usan el mismo extractor pero no
+   están activados (7 .xlsm). Los binarios antiguos `.doc`/`.xls` (~200) siguen sin leerse.
 
 ## Arquitectura
 
@@ -41,7 +44,7 @@ Se usa solo en el PC del usuario, con un favorito a `http://localhost:8766/`.
 app_finder.py          Servidor HTTP + API REST + motor de búsqueda (parse_search/run_query)
 finder/config.py       finder_config.json (por puesto, en .gitignore), fuentes y conversión de rutas Windows <-> WSL
 finder/db.py           Esquema SQLite (data/finder_index_<fuente>.db), FTS5, migraciones por PRAGMA user_version
-finder/extraccion.py   Texto con PyMuPDF (máx. max_pages_text páginas y 400.000 caracteres)
+finder/extraccion.py   Texto: PDF con PyMuPDF (máx. max_pages_text páginas); docx/xlsx con la stdlib. Máx. 400.000 caracteres
 finder/indexador.py    Sincronización incremental en paralelo + bucle en segundo plano
 finder/etiquetas.py    Etiquetas manuales (etiquetas_<fuente>.db, adjunta como «et» en cada conexión)
 finder/duplicados.py   Duplicados exactos (SHA-256): huellas, promoción de copias, consolidación, listado
@@ -61,7 +64,7 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
   se añade otra «Profesional» (o «Personal») vacía.
 - La fuente activa es **global en el servidor** (un usuario, un puesto): `get_conn()` sin argumento usa la
   activa, así que URLs de PDF, CSV y unión no llevan fuente (el cliente añade `&f=` solo para la caché).
-  Las operaciones que modifican (`/api/doc/*`, `/api/etiquet*`, `/api/sync`, `/api/open_location`, `/api/duplicados/*`) llevan
+  Las operaciones que modifican (`/api/doc/*`, `/api/etiquet*`, `/api/sync`, `/api/open_location`, `/api/open_file`, `/api/duplicados/*`) llevan
   la cabecera `X-FinderJR-Fuente`; si no coincide con la activa → 409 y la pestaña se pone al día.
 - `background_loop` sincroniza todas las fuentes (la activa primero). Una fuente sin carpeta o con la
   carpeta inaccesible **no** se sincroniza (antes se vaciaba el índice entero). Quitar una fuente borra su
@@ -110,6 +113,22 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
   dos ramas de `run_query`, así que CSV y `pdf_bundle` los respetan.
 - Pendiente opcional: fusionar etiquetas; reenganchar etiquetas huérfanas tras mover archivos (hash).
 
+### Word y Excel (`finder/extraccion.py`, `extract_text` elige por extensión)
+- **docx**: cuerpo, encabezados, pies y notas (sin repetir bloques idénticos); un párrafo por línea y cada
+  fila de tabla en una línea con las celdas separadas por « | ». `num_paginas` = `<Pages>` de
+  `docProps/app.xml` (lo que guardó Word; 1 si no existe).
+- **xlsx**: una hoja por «página» (`num_paginas` = hojas; la UI dice «N hojas»), cada una con la cabecera
+  `[Hoja: nombre]` y una fila por línea con las celdas no vacías separadas por tabuladores. Se leen hasta
+  `max_pages_text` hojas. Los números se escriben **en formato español** (`1224.5` → `1.224,50`) y las
+  celdas con formato de fecha como `dd/mm/aaaa`, para que se encuentren igual que en un PDF
+  (`expand_numeric_variants` ya cubre `1224,50` ⇄ `1.224,50`). Es el valor guardado, no el mostrado
+  (no se aplican los formatos de número personalizados).
+- Protegido con contraseña (no es ZIP) → estado ERROR con mensaje claro. Límite de 200 MB por parte del ZIP.
+- `necesita_ocr`/`sin_texto` solo se marcan en PDF: un Word/Excel sin texto no es un escaneado.
+- UI: en los no PDF solo existe la pestaña «Texto» (las otras se desactivan, y se recuerda la elegida para
+  el siguiente PDF); `page_image` responde 400; «Abrir» llama a `POST /api/open_file` (`os.startfile`,
+  aplicación predeterminada) en vez de abrir el archivo en el navegador. `pdf_bundle` ya omitía los no PDF.
+
 ### Indexación (`finder/indexador.py`)
 - Detección de cambios por ruta + tamaño + mtime (tolerancia 1 s). Archivo modificado = borrar e insertar.
 - Extracción con `ProcessPoolExecutor` (hasta 4 procesos), lotes de 48, con caída a modo secuencial si
@@ -156,7 +175,7 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
 GET `/api/info`, `/api/search`, `/api/status`, `/api/config`, `/api/doc/<id>[/pdf|/page_image]`,
 `/api/export/csv`, `/api/export/pdf_bundle` (une hasta 300 PDF filtrados), `/api/etiquetas` (con recuentos),
 `/api/fuentes`, `/api/duplicados`, `/api/archivo/<id>/pdf` (también copias).
-POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en el archivo),
+POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en el archivo), `/api/open_file` (lo abre con su programa),
 `/api/layout` (guarda anchos de paneles en `finder_config.json`), `/api/config`,
 `/api/etiquetas` (crear), `/api/etiquetas/<id>` (nombre/color/tecla), `/api/etiquetas/<id>/borrar`,
 `/api/etiquetar` (`etiqueta_id`, `accion` poner|quitar, `doc_ids` o `busqueda`), `/api/doc/<id>/renombrar`, `/api/doc/<id>/eliminar {copias}`,
@@ -188,6 +207,8 @@ POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en 
 - Capturas de pantalla: el MCP de puppeteer y el Chromium de Playwright en WSL no funcionan (faltan
   bibliotecas). Sí funciona el Chrome de Windows en headless con `--remote-debugging-port=9333`
   (WSL en red espejo ve `127.0.0.1`) + `playwright-core` (`chromium.connectOverCDP`).
+- Pruebas con el Python de Windows: el índice de prueba debe estar en una carpeta de Windows (p. ej.
+  `%TEMP%`), **no** en el scratchpad de WSL (`\\wsl.localhost\...`): SQLite se bloquea en ese recurso de red.
 - No existen tests automatizados. `tools/probar_api.py` es la prueba de humo: levanta su propio servidor
   en el puerto 8798 sobre el índice real y lanza búsquedas de ejemplo.
 
@@ -217,4 +238,5 @@ POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en 
 1. **OCR** de los ~1.100 PDF escaneados (Tesseract en español) para que se encuentren por contenido;
    hoy solo se encuentran por nombre y carpeta. Debe integrarse en la indexación incremental sin
    repetir el OCR de lo ya procesado.
-2. **Formatos Office** (docx/xlsx; ~430 archivos).
+2. **Formatos Office antiguos** (.doc/.xls, ~200 archivos): binarios OLE, no se pueden leer con la stdlib
+   de forma fiable. Opciones: convertirlos con Office/LibreOffice o una dependencia nueva (consultarlo).

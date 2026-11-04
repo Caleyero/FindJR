@@ -38,7 +38,7 @@ import fitz  # PyMuPDF
 from finder import config, duplicados, etiquetas, indexador
 from finder.config import BASE_DIR, fuente, load_config, save_config, to_display_path
 from finder.db import borrar_indice, get_conn, init_db, meta_get, meta_set
-from finder.extraccion import SEPARADOR_PAGINA
+from finder.extraccion import SEPARADOR_PAGINA, es_pdf
 
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 DEFAULT_PORT = 8766
@@ -488,6 +488,14 @@ def open_location(path: str) -> None:
         subprocess.Popen(["explorer.exe", "/select,", to_display_path(path)])
 
 
+def open_file(path: str) -> None:
+    """Abre el archivo con su aplicación predeterminada de Windows (Word, Excel…)."""
+    if os.name == "nt":
+        os.startfile(os.path.normpath(path))  # type: ignore[attr-defined]
+    else:
+        subprocess.Popen(["explorer.exe", to_display_path(path)])
+
+
 def content_disposition(filename: str, inline: bool) -> str:
     ascii_name = re.sub(r"[^A-Za-z0-9._ -]+", "_", filename) or "documento.pdf"
     return (f"{'inline' if inline else 'attachment'}; filename=\"{ascii_name}\"; "
@@ -587,6 +595,8 @@ class Handler(BaseHTTPRequestHandler):
                         data = f.read()
                     ctype = mimetypes.guess_type(doc["nombre"])[0] or "application/octet-stream"
                     return self.send_bytes(data, ctype, filename=doc["nombre"], inline=params.get("download") != "1")
+                if not es_pdf(doc["nombre"]):
+                    return self.send_json({"error": "Solo los PDF tienen vista de página"}, status=400)
                 png = render_page_png(doc, max(1, int(params.get("page", "1"))), [t for t in qs.get("t", []) if t.strip()])
                 return self.send_bytes(png, "image/png")
 
@@ -666,7 +676,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(fuente_quitar(m.group(1)))
                 return self.send_json(fuente_modificar(m.group(1), payload))
 
-            if route.startswith(("/api/sync", "/api/open_location", "/api/etiquet", "/api/doc/", "/api/duplicados")):
+            if route.startswith(("/api/sync", "/api/open_location", "/api/open_file", "/api/etiquet", "/api/doc/", "/api/duplicados")):
                 self._comprobar_fuente(payload)
 
             if route == "/api/sync":
@@ -681,6 +691,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not doc:
                     return self.send_json({"error": "Documento no encontrado"}, status=404)
                 open_location(doc["ruta"])
+                return self.send_json({"status": "ok"})
+            if route == "/api/open_file":
+                doc = get_doc(int(payload.get("doc_id", 0)))
+                if not doc:
+                    return self.send_json({"error": "Documento no encontrado"}, status=404)
+                if not os.path.exists(doc["ruta"]):
+                    return self.send_json({"error": f"No se encuentra el archivo: {doc['ruta_display']}"}, status=404)
+                open_file(doc["ruta"])
                 return self.send_json({"status": "ok"})
 
             if route == "/api/duplicados/resolver":

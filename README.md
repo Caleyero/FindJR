@@ -7,6 +7,11 @@ Interfaz replicada de cBank (Búsqueda | Resultados | Previsualización con resa
 Búsqueda bruta, sin clasificaciones ni interpretación del contenido: lo que aparece en los
 resultados contiene literalmente lo buscado.
 
+Indexa **PDF**, **Word (.docx)** y **Excel (.xlsx)** (`extensions` en `finder_config.json`). De los Word y
+Excel se muestra el texto con lo buscado resaltado (las fechas de Excel como `dd/mm/aaaa` y los importes en
+formato español, `1.224,50`, para que se encuentren igual que en un PDF); «Abrir» los abre con Word/Excel.
+Los formatos antiguos `.doc`/`.xls` no se leen.
+
 ## Arranque
 
 - **Windows (doble clic)**: `iniciar_finderjr.bat` (sin consola). Abre el navegador y, mientras haya
@@ -96,7 +101,7 @@ finder/config.py       finder_config.json (fuentes) y rutas Windows/WSL
 finder/db.py           Índice SQLite + FTS5, uno por fuente (data/finder_index_<fuente>.db)
 finder/etiquetas.py    Etiquetas manuales (etiquetas_<fuente>.db)
 finder/duplicados.py   Duplicados exactos (SHA-256): copias registradas sin indexar su texto
-finder/extraccion.py   Extracción de texto con PyMuPDF
+finder/extraccion.py   Extracción de texto: PDF con PyMuPDF; docx/xlsx leyendo su XML (biblioteca estándar)
 finder/indexador.py    Sincronización incremental en paralelo + proceso en segundo plano
 static/                Interfaz (estilo de cBank)
 tools/probar_api.py    Prueba de humo
@@ -105,4 +110,4 @@ tools/probar_api.py    Prueba de humo
 ## Pendiente
 
 - **OCR** de los ~1.100 PDF escaneados (Tesseract en español) para que sean buscables por contenido.
-- Formatos Office (docx/xlsx).
+- Formatos Office antiguos (.doc/.xls; ~200 archivos).
