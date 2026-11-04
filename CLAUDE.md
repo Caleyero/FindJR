@@ -44,6 +44,7 @@ finder/db.py           Esquema SQLite (data/finder_index_<fuente>.db), FTS5, mig
 finder/extraccion.py   Texto con PyMuPDF (máx. max_pages_text páginas y 400.000 caracteres)
 finder/indexador.py    Sincronización incremental en paralelo + bucle en segundo plano
 finder/etiquetas.py    Etiquetas manuales (etiquetas_<fuente>.db, adjunta como «et» en cada conexión)
+finder/duplicados.py   Duplicados exactos (SHA-256): huellas, promoción de copias, consolidación, listado
 static/                index.html, app.js, styles.css (estilo cBank)
 tools/probar_api.py    Prueba de humo contra el servidor en marcha
 ```
@@ -60,21 +61,44 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
   se añade otra «Profesional» (o «Personal») vacía.
 - La fuente activa es **global en el servidor** (un usuario, un puesto): `get_conn()` sin argumento usa la
   activa, así que URLs de PDF, CSV y unión no llevan fuente (el cliente añade `&f=` solo para la caché).
-  Las operaciones que modifican (`/api/doc/*`, `/api/etiquet*`, `/api/sync`, `/api/open_location`) llevan
+  Las operaciones que modifican (`/api/doc/*`, `/api/etiquet*`, `/api/sync`, `/api/open_location`, `/api/duplicados/*`) llevan
   la cabecera `X-FinderJR-Fuente`; si no coincide con la activa → 409 y la pestaña se pone al día.
 - `background_loop` sincroniza todas las fuentes (la activa primero). Una fuente sin carpeta o con la
   carpeta inaccesible **no** se sincroniza (antes se vaciaba el índice entero). Quitar una fuente borra su
   índice y conserva `etiquetas_<id>.db` (si se recrea con el mismo nombre, las recupera).
 
-### Índice (`finder/db.py`, `SCHEMA_VERSION = 2`)
+### Índice (`finder/db.py`, `SCHEMA_VERSION = 3`)
 - `archivos`: un registro por archivo físico (ruta, size, mtime, páginas, `necesita_ocr`, estado OK/ERROR).
 - `documentos`: hoy 1:1 con `archivos` (los campos `primera_pag/ultima_pag` existen por si algún día se
   parte un PDF en varios documentos). `mtime` es la fecha de modificación del archivo: la única fecha que
   se muestra y por la que se ordena.
-- `documentos_fts`: FTS5 *external content* sobre (`nombre`, `ruta_rel`, `texto`) con
+- `documentos_fts`: FTS5 *external content* sobre (`nombre`, `ruta_rel`, `texto`, `otras_rutas`) con
   `unicode61 remove_diacritics 2`, mantenida por triggers. Si se cambia el esquema, subir
   `SCHEMA_VERSION` y escribir la migración en `init_db` (versiones desconocidas se borran y se reindexa).
 - `sin_texto`/`necesita_ocr` = texto extraído < 60 caracteres (escaneados, ~1.100 PDF).
+- v3 (noviembre 2026): `archivos.hash` y `archivos.copia_de`, `documentos.otras_rutas` (también en el FTS).
+  `_asegurar_v3` migra un índice v2 sin reindexar (recrea y reconstruye el FTS: ~3 s). Ojo: el código
+  anterior a v3 trata la versión 3 como desconocida y **borra el índice** (habría que reindexar).
+
+### Duplicados (`finder/duplicados.py`, noviembre 2026, a petición del usuario)
+- Solo **idénticos byte a byte** (SHA-256). Se descartó comparar el texto: facturas distintas
+  (p. ej. `DIS_ARVAL … 2300616087` y `… 2400022256`) dan el mismo texto extraído. Al migrar había 161 grupos,
+  194 copias sobrantes, 218 MB.
+- La huella solo se calcula si otro archivo de la fuente tiene **el mismo tamaño** (~1.600 de 14.000), en
+  hilos, en la fase «comparando» de `sync`. Una vez calculada se guarda; no se repite.
+- Una sola copia por grupo, la **principal**, tiene fila en `documentos`; las demás solo en `archivos`
+  (`copia_de` = id de la principal, sin texto ni documento) y **no se extraen**. Sus rutas van a
+  `documentos.otras_rutas` (`refrescar_rutas`, al final de `sync`, `eliminar` y `resolver_duplicados`),
+  así el documento se encuentra también por el nombre/carpeta de una copia (la fila lo indica: «Copia: …»).
+- `promover`: antes de que desaparezca una principal (borrada o movida fuera, modificada, eliminada desde la
+  app) su documento pasa a una copia sin volver a leer el PDF, y sus etiquetas se copian a la nueva ruta.
+  `consolidar`: deja un documento por huella (migración y casos tardíos); prefiere la que tiene etiquetas y
+  después la más antigua.
+- **Nunca se borra automáticamente** (decisión del usuario: «registrar y avisar»). Botón «Duplicados (N)»;
+  el usuario elige qué conservar en cada grupo. `indexador.resolver_duplicados` vuelve a calcular las dos
+  huellas justo antes de enviar a la Papelera. `meta.duplicados_revisados` marca las copias «nuevas».
+- Invariantes (comprobados en las pruebas): ninguna copia tiene documento; ninguna principal sin documento;
+  sin cadenas (copia de una copia); la copia tiene la misma huella que su principal.
 
 ### Etiquetas (`finder/etiquetas.py`)
 - Base de datos **aparte** y una por fuente (`etiquetas_<id>.db` en la raíz; `FINDERJR_ETIQUETAS_DIR` cambia
@@ -121,8 +145,8 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
   `excluye` (NOT IN). Máx. 10 palabras por campo y 4 frases.
 - Cada palabra se busca como prefijo (`"arrend"*`). `expand_numeric_variants`: `1224,00` ⇄ `1.224,00`.
   Los separadores se ignoran: `B-06976` genera `"B 06976"*` OR `"B06976"*`.
-- Relevancia: `bm25(documentos_fts, 8.0, 4.0, 1.0)`, con más peso para el nombre de archivo y la ruta
-  que para el texto. Otras ordenaciones: fecha (por defecto descendente) y nombre.
+- Relevancia: `bm25(documentos_fts, 8.0, 4.0, 1.0, 4.0)` (nombre, ruta, texto, rutas de las copias), con
+  más peso para el nombre de archivo y la ruta que para el texto. Otras ordenaciones: fecha (por defecto descendente) y nombre.
 - Resaltado: `terms` se devuelve al cliente; el fragmento se localiza con `_fold` (sin acentos y con la
   misma longitud). La página PDF se renderiza a PNG con los términos resaltados (`/api/doc/<id>/page_image`).
 - Referencia de rendimiento: < 0,1 s típico; el peor caso es ~1,2 s (prefijo corto con muchos aciertos
@@ -131,11 +155,12 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
 ### API
 GET `/api/info`, `/api/search`, `/api/status`, `/api/config`, `/api/doc/<id>[/pdf|/page_image]`,
 `/api/export/csv`, `/api/export/pdf_bundle` (une hasta 300 PDF filtrados), `/api/etiquetas` (con recuentos),
-`/api/fuentes`.
+`/api/fuentes`, `/api/duplicados`, `/api/archivo/<id>/pdf` (también copias).
 POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en el archivo),
 `/api/layout` (guarda anchos de paneles en `finder_config.json`), `/api/config`,
 `/api/etiquetas` (crear), `/api/etiquetas/<id>` (nombre/color/tecla), `/api/etiquetas/<id>/borrar`,
-`/api/etiquetar` (`etiqueta_id`, `accion` poner|quitar, `doc_ids` o `busqueda`), `/api/doc/<id>/renombrar`, `/api/doc/<id>/eliminar`,
+`/api/etiquetar` (`etiqueta_id`, `accion` poner|quitar, `doc_ids` o `busqueda`), `/api/doc/<id>/renombrar`, `/api/doc/<id>/eliminar {copias}`,
+`/api/duplicados/resolver {grupos: [{conservar, eliminar}]}`, `/api/duplicados/visto`,
 `/api/fuente/activar {id}`, `/api/fuentes` (crear), `/api/fuentes/<id>` (modificar), `/api/fuentes/<id>/borrar`.
 
 ### Ciclo de vida del proceso

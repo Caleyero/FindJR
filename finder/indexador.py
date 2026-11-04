@@ -5,7 +5,9 @@ Cada fuente (carpeta) tiene su propio índice; aquí «Biblioteca» es la carpet
 
 Ciclo de sincronización:
   1. Descubre archivos nuevos / modificados / eliminados (ruta + tamaño + fecha).
-  2. Extrae el texto en paralelo (varios procesos) y lo guarda en lotes en el índice FTS5.
+  2. Calcula la huella (SHA-256) de los que comparten tamaño con otro: los idénticos a uno ya indexado
+     se registran como copias, sin extraer su texto (finder/duplicados.py).
+  3. Extrae el texto en paralelo (varios procesos) y lo guarda en lotes en el índice FTS5.
 """
 
 import concurrent.futures as cf
@@ -16,9 +18,10 @@ import subprocess
 import threading
 import time
 import traceback
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import etiquetas
+from . import duplicados, etiquetas
 from .config import excluded_dirs, fuente, load_config, to_display_path, to_local_path
 from .db import get_conn, init_db, meta_set
 from .extraccion import extract_pdf_text
@@ -87,23 +90,50 @@ def _extract_worker(args: Tuple[str, int]) -> Dict[str, Any]:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-def _store(conn, item: Tuple[str, str, int, float], er: Dict[str, Any], prev_id: Optional[int]) -> None:
+def _carpeta(rel: str) -> str:
+    parts = rel.replace("\\", "/").split("/")
+    return parts[0] if len(parts) > 1 else "(raíz)"
+
+
+def _quitar_previo(conn, prev_id: Optional[int]) -> None:
+    """Quita la versión anterior de un archivo modificado; si era la principal de un grupo de duplicados,
+    su documento pasa antes a una de sus copias (que conservan el contenido anterior)."""
+    if prev_id:
+        duplicados.promover(conn, prev_id)
+        conn.execute("DELETE FROM archivos WHERE id = ?", (prev_id,))
+
+
+def _store_copia(conn, item: Tuple[str, str, int, float], prev_id: Optional[int], h: str, principal_id: int) -> None:
+    """Registra un archivo idéntico a otro ya indexado: sin extraer su texto ni crear documento."""
+    full, rel, size, mtime = item
+    _quitar_previo(conn, prev_id)
+    p = conn.execute("SELECT paginas, necesita_ocr, estado, error FROM archivos WHERE id = ?", (principal_id,)).fetchone()
+    nombre = os.path.basename(full)
+    conn.execute(
+        """INSERT INTO archivos (ruta, ruta_rel, carpeta, nombre, ext, size, mtime, paginas, necesita_ocr, estado, error,
+                                 indexado_en, hash, copia_de)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (full, rel, _carpeta(rel), nombre, os.path.splitext(nombre)[1].lower(), size, mtime, p["paginas"], p["necesita_ocr"],
+         p["estado"], p["error"], datetime.datetime.now().isoformat(timespec="seconds"), h, principal_id),
+    )
+
+
+def _store(conn, item: Tuple[str, str, int, float], er: Dict[str, Any], prev_id: Optional[int], h: Optional[str] = None) -> None:
     full, rel, size, mtime = item
     nombre = os.path.basename(full)
-    parts = rel.replace("\\", "/").split("/")
-    carpeta = parts[0] if len(parts) > 1 else "(raíz)"
-    if prev_id:
-        conn.execute("DELETE FROM archivos WHERE id = ?", (prev_id,))
+    carpeta = _carpeta(rel)
+    _quitar_previo(conn, prev_id)
     ok = er.get("ok")
     texto = er.get("texto", "") if ok else ""
     sin_texto = 1 if len(texto.strip()) < 60 else 0
     paginas = er.get("paginas", 0) if ok else 0
     cur = conn.execute(
-        """INSERT INTO archivos (ruta, ruta_rel, carpeta, nombre, ext, size, mtime, paginas, necesita_ocr, estado, error, indexado_en)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO archivos (ruta, ruta_rel, carpeta, nombre, ext, size, mtime, paginas, necesita_ocr, estado, error,
+                                 indexado_en, hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (full, rel, carpeta, nombre, os.path.splitext(nombre)[1].lower(), size, mtime, paginas,
          sin_texto if ok else 0, "OK" if ok else "ERROR", None if ok else er.get("error"),
-         datetime.datetime.now().isoformat(timespec="seconds")),
+         datetime.datetime.now().isoformat(timespec="seconds"), h),
     )
     n_pag = max(1, paginas)
     conn.execute(
@@ -122,7 +152,7 @@ def sync(force_reindex: bool = False, fid: Optional[str] = None) -> Dict[str, An
     if not _SYNC_LOCK.acquire(blocking=False):
         return {"status": "busy"}
     t0 = time.time()
-    res: Dict[str, Any] = {"status": "ok", "added": 0, "updated": 0, "removed": 0, "errors": 0}
+    res: Dict[str, Any] = {"status": "ok", "added": 0, "updated": 0, "removed": 0, "errors": 0, "duplicados": 0}
     try:
         cfg = load_config()
         fte = fuente(cfg, fid)
@@ -143,20 +173,51 @@ def sync(force_reindex: bool = False, fid: Optional[str] = None) -> Dict[str, An
         if force_reindex:
             with conn:
                 conn.execute("DELETE FROM archivos")
-        existing = {r["ruta"]: (r["id"], r["size"], r["mtime"]) for r in conn.execute("SELECT id, ruta, size, mtime FROM archivos")}
+        existing = {r["ruta"]: r for r in conn.execute("SELECT id, ruta, size, mtime, hash, copia_de FROM archivos")}
         found_paths = {f[0] for f in found}
-        removed = [v[0] for k, v in existing.items() if k not in found_paths]
+
+        # 1. Desaparecidos. Primero las copias; después las principales, cuyo documento pasa a una copia que
+        #    siga existiendo (así no se pierde el texto ni hay que volver a extraerlo).
+        removed = sorted((v for k, v in existing.items() if k not in found_paths), key=lambda v: v["copia_de"] is None)
         if removed:
             with conn:
-                conn.executemany("DELETE FROM archivos WHERE id = ?", [(i,) for i in removed])
-        res["removed"] = len(removed)
+                for v in removed:
+                    _quitar_previo(conn, v["id"])
+        res["removed"] = sum(1 for v in removed if v["copia_de"] is None)
 
-        todo = []
+        # 2. Nuevos o modificados
+        cambiados = []
         for item in found:
             prev = existing.get(item[0])
-            if prev and prev[1] == item[2] and abs(prev[2] - item[3]) < 1.0:
+            if prev and prev["size"] == item[2] and abs(prev["mtime"] - item[3]) < 1.0:
                 continue
-            todo.append((item, prev[0] if prev else None))
+            cambiados.append((item, prev["id"] if prev else None))
+
+        # 3. Huellas, solo de los archivos cuyo tamaño coincide con el de otro (los únicos que pueden ser
+        #    idénticos): los cambiados y los ya indexados que aún no la tenían.
+        tallas = Counter(f[2] for f in found)
+        rutas_cambiadas = {it[0] for it, _ in cambiados}
+        sin_huella = [v for k, v in existing.items() if k in found_paths and k not in rutas_cambiadas
+                      and v["hash"] is None and tallas[v["size"]] > 1]
+        a_comparar = [v["ruta"] for v in sin_huella] + [it[0] for it, _ in cambiados if tallas[it[2]] > 1]
+        if a_comparar:
+            _set_state(fase="comparando", mensaje=f"{fte['nombre']}: buscando duplicados en {len(a_comparar):,} archivos…".replace(",", "."))
+        hs = duplicados.huellas(a_comparar)
+        with conn:
+            conn.executemany("UPDATE archivos SET hash = ? WHERE id = ?",
+                             [(hs[v["ruta"]], v["id"]) for v in sin_huella if hs.get(v["ruta"])])
+            res["duplicados"] = duplicados.consolidar(conn)
+
+        # 4. Los idénticos a otro ya indexado (o a otro anterior de este mismo lote) no se extraen
+        todo, copias, en_lote = [], [], set()
+        for item, prev_id in cambiados:
+            h = hs.get(item[0])
+            if h and (h in en_lote or duplicados.principal_de(conn, h, excluir=prev_id)):
+                copias.append((item, prev_id, h))
+                continue
+            if h:
+                en_lote.add(h)
+            todo.append((item, prev_id, h))
         res["pending"] = len(todo)
 
         _set_state(fase="extrayendo", total=len(todo), hechos=0,
@@ -172,7 +233,7 @@ def sync(force_reindex: bool = False, fid: Optional[str] = None) -> Dict[str, An
             try:
                 for i in range(0, len(todo), 48):
                     chunk = todo[i:i + 48]
-                    args = [(it[0], max_pages) for it, _ in chunk]
+                    args = [(it[0], max_pages) for it, _, _ in chunk]
                     results = None
                     if pool:
                         try:
@@ -183,8 +244,8 @@ def sync(force_reindex: bool = False, fid: Optional[str] = None) -> Dict[str, An
                     if results is None:
                         results = [_extract_worker(a) for a in args]
                     with conn:
-                        for (it, prev_id), er in zip(chunk, results):
-                            _store(conn, it, er, prev_id)
+                        for (it, prev_id, h), er in zip(chunk, results):
+                            _store(conn, it, er, prev_id, h)
                             res["updated" if prev_id else "added"] += 1
                             if not er.get("ok"):
                                 res["errors"] += 1
@@ -194,7 +255,20 @@ def sync(force_reindex: bool = False, fid: Optional[str] = None) -> Dict[str, An
                 if pool:
                     pool.shutdown()
 
+        # 5. Copias: después de extraer, porque su principal puede ser otro archivo de este mismo lote
+        if copias:
+            with conn:
+                for it, prev_id, h in copias:
+                    principal = duplicados.principal_de(conn, h, excluir=prev_id)
+                    if principal:
+                        _store_copia(conn, it, prev_id, h, principal)
+                        res["duplicados"] += 1
+                    else:  # caso raro (su principal ha fallado o ha cambiado): se indexa normalmente
+                        _store(conn, it, _extract_worker((it[0], max_pages)), prev_id, h)
+                        res["updated" if prev_id else "added"] += 1
+
         with conn:
+            duplicados.refrescar_rutas(conn)
             meta_set(conn, "ultima_sync", datetime.datetime.now().isoformat(timespec="seconds"))
         conn.close()
         res["elapsed_sec"] = round(time.time() - t0, 1)
@@ -330,11 +404,29 @@ def _a_papelera_wsl(path: str) -> None:
         raise OSError((r.stderr or r.stdout or "").strip()[:300])
 
 
-def eliminar(doc_id: int, fid: Optional[str] = None) -> Dict[str, Any]:
+def _a_papelera(path: str) -> None:
+    """Envía un archivo a la Papelera (nunca borrado definitivo). Si ya no existe, no hace nada.
+    Lanza ValueError con un mensaje para el usuario."""
+    if not os.path.exists(path):
+        return
+    try:
+        (_a_papelera_windows if os.name == "nt" else _a_papelera_wsl)(path)
+    except ValueError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise ValueError("Windows no ha podido enviarlo a la Papelera: puede que el archivo esté abierto "
+                         f"en otro programa o que no haya permisos. Ciérralo e inténtalo de nuevo. ({e})") from None
+    if os.path.exists(path):
+        raise ValueError("El archivo sigue en su sitio: Windows no ha podido eliminarlo.")
+
+
+def eliminar(doc_id: int, con_copias: bool = False, fid: Optional[str] = None) -> Dict[str, Any]:
     """Envía el archivo de un documento a la Papelera de reciclaje y lo quita del índice.
 
-    Las etiquetas se conservan en etiquetas_<fuente>.db: si el archivo se restaura desde la Papelera, la
-    siguiente sincronización lo vuelve a indexar y recupera sus etiquetas."""
+    Si tiene copias idénticas y no se piden también (`con_copias`), el documento sigue existiendo: pasa a
+    una de ellas con sus etiquetas, y se devuelve en «conservado». Las etiquetas se conservan además en
+    etiquetas_<fuente>.db: si el archivo se restaura desde la Papelera, la siguiente sincronización lo
+    vuelve a indexar y recupera sus etiquetas."""
     if not _SYNC_LOCK.acquire(timeout=5):
         raise ValueError("Hay una sincronización en curso. Inténtalo de nuevo en cuanto termine.")
     try:
@@ -345,20 +437,89 @@ def eliminar(doc_id: int, fid: Optional[str] = None) -> Dict[str, Any]:
                    JOIN archivos a ON a.id = d.archivo_id WHERE d.id = ?""", (doc_id,)).fetchone()
             if not r:
                 raise ValueError("Documento no encontrado.")
-            if os.path.exists(r["ruta"]):
-                try:
-                    (_a_papelera_windows if os.name == "nt" else _a_papelera_wsl)(r["ruta"])
-                except ValueError:
-                    raise
-                except Exception as e:  # noqa: BLE001
-                    raise ValueError("Windows no ha podido enviarlo a la Papelera: puede que el archivo esté abierto "
-                                     f"en otro programa o que no haya permisos. Ciérralo e inténtalo de nuevo. ({e})") from None
-                if os.path.exists(r["ruta"]):
-                    raise ValueError("El archivo sigue en su sitio: Windows no ha podido eliminarlo.")
-            # (si ya no existía en disco, solo se quita del índice)
+            copias = conn.execute("SELECT id, ruta FROM archivos WHERE copia_de = ?", (r["id"],)).fetchall()
+            n_copias = 0
+            if con_copias:
+                for c in copias:  # primero las copias: si algo falla, el documento sigue entero en su sitio
+                    _a_papelera(c["ruta"])
+                    with conn:
+                        conn.execute("DELETE FROM archivos WHERE id = ?", (c["id"],))
+                    n_copias += 1
+            _a_papelera(r["ruta"])  # (si ya no existía en disco, solo se quita del índice)
             with conn:
+                nuevo = None if con_copias else duplicados.promover(conn, r["id"])
                 conn.execute("DELETE FROM archivos WHERE id = ?", (r["id"],))  # documentos y FTS en cascada
-            return {"status": "ok", "nombre": r["nombre"], "ruta_display": to_display_path(r["ruta"])}
+                duplicados.refrescar_rutas(conn)
+            out: Dict[str, Any] = {"status": "ok", "nombre": r["nombre"], "ruta_display": to_display_path(r["ruta"]),
+                                   "copias_eliminadas": n_copias}
+            if nuevo:
+                c = conn.execute("SELECT ruta FROM archivos WHERE id = ?", (nuevo,)).fetchone()
+                out["conservado"] = to_display_path(c["ruta"])
+            return out
+        finally:
+            conn.close()
+    finally:
+        _SYNC_LOCK.release()
+
+
+def resolver_duplicados(grupos: List[Dict[str, Any]], fid: Optional[str] = None) -> Dict[str, Any]:
+    """Elimina (a la Papelera) las copias que el usuario ha descartado en cada grupo de duplicados y
+    deja indexada la que ha elegido conservar. grupos = [{conservar: archivo_id, eliminar: [archivo_id…]}].
+
+    Antes de enviar nada a la Papelera se vuelve a calcular la huella de los dos archivos: solo se
+    elimina lo que en ese momento sigue siendo idéntico byte a byte a lo que se conserva. Las etiquetas de
+    lo eliminado pasan a lo conservado. Los errores de un archivo no detienen el resto."""
+    if not _SYNC_LOCK.acquire(timeout=5):
+        raise ValueError("Hay una sincronización en curso. Inténtalo de nuevo en cuanto termine.")
+    res: Dict[str, Any] = {"status": "ok", "eliminados": 0, "bytes": 0, "errores": []}
+    try:
+        conn = get_conn(fid)
+        try:
+            for g in grupos:
+                try:
+                    keep_id = int(g.get("conservar") or 0)
+                    del_ids = list(dict.fromkeys(int(x) for x in g.get("eliminar") or [] if int(x) != keep_id))
+                except (TypeError, ValueError):
+                    res["errores"].append("Petición no válida.")
+                    continue
+                if not del_ids:
+                    continue
+                filas = {f["id"]: f for f in conn.execute(
+                    f"""SELECT id, ruta, ruta_rel, nombre, size, hash, copia_de FROM archivos
+                        WHERE id IN ({','.join('?' * (len(del_ids) + 1))})""", [keep_id] + del_ids)}
+                k = filas.get(keep_id)
+                if not k or not k["hash"]:
+                    res["errores"].append("El archivo que se iba a conservar ya no está en el índice. Sincroniza y vuelve a intentarlo.")
+                    continue
+                grupo = k["copia_de"] or k["id"]
+                h_keep = duplicados.huella(k["ruta"])
+                if h_keep != k["hash"]:
+                    res["errores"].append(f"«{k['nombre']}» ha cambiado o no se puede leer: no se ha tocado su grupo. Sincroniza y revísalo.")
+                    continue
+                if k["copia_de"]:  # se conserva una copia: pasa a ser la indexada
+                    with conn:
+                        duplicados.promover(conn, k["copia_de"], nuevo_id=k["id"])
+                for did in del_ids:
+                    d = filas.get(did)
+                    if not d or (d["copia_de"] or d["id"]) not in (grupo, k["id"]) or d["hash"] != k["hash"]:
+                        res["errores"].append("Un archivo ya no pertenece a ese grupo de duplicados: se ha omitido.")
+                        continue
+                    if os.path.exists(d["ruta"]) and duplicados.huella(d["ruta"]) != h_keep:
+                        res["errores"].append(f"«{d['nombre']}» ya no es idéntico: no se ha eliminado.")
+                        continue
+                    try:
+                        _a_papelera(d["ruta"])
+                    except ValueError as e:
+                        res["errores"].append(f"«{d['nombre']}»: {e}")
+                        continue
+                    with conn:
+                        duplicados.copiar_etiquetas(conn, [d["ruta_rel"]], k["ruta_rel"])
+                        conn.execute("DELETE FROM archivos WHERE id = ?", (d["id"],))
+                    res["eliminados"] += 1
+                    res["bytes"] += d["size"]
+            with conn:
+                duplicados.refrescar_rutas(conn)
+            return res
         finally:
             conn.close()
     finally:

@@ -35,9 +35,9 @@ if sys.stderr is None:
 
 import fitz  # PyMuPDF
 
-from finder import config, etiquetas, indexador
+from finder import config, duplicados, etiquetas, indexador
 from finder.config import BASE_DIR, fuente, load_config, save_config, to_display_path
-from finder.db import borrar_indice, get_conn, init_db, meta_get
+from finder.db import borrar_indice, get_conn, init_db, meta_get, meta_set
 from finder.extraccion import SEPARADOR_PAGINA
 
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -51,8 +51,8 @@ LAST_HTTP_ACTIVITY_AT = time.monotonic()
 ACTIVE_HTTP_REQUESTS = 0
 SERVER_READY_AT = time.monotonic()
 
-# Pesos BM25 por columna: nombre de archivo, ruta, texto
-BM25 = "bm25(documentos_fts, 8.0, 4.0, 1.0)"
+# Pesos BM25 por columna: nombre de archivo, ruta, texto, rutas de sus copias idénticas
+BM25 = "bm25(documentos_fts, 8.0, 4.0, 1.0, 4.0)"
 
 
 # ==============================================================================
@@ -214,7 +214,8 @@ def query_documents(params: Dict[str, str]) -> Dict[str, Any]:
         offset = max(int(params.get("offset", "0")), 0)
     except ValueError:
         offset = 0
-    cols = "d.id, d.nombre, d.ruta_rel, d.carpeta, d.mtime, d.num_paginas, d.sin_texto, d.texto"
+    cols = ("d.id, d.nombre, d.ruta_rel, d.carpeta, d.mtime, d.num_paginas, d.sin_texto, d.texto, "
+            "(SELECT COUNT(*) FROM archivos c WHERE c.copia_de = d.archivo_id) AS copias, d.otras_rutas")
     total, rows, ps = run_query(params, limit, offset, cols)
     items = []
     for r in rows:
@@ -236,8 +237,10 @@ def query_info() -> Dict[str, Any]:
     conn = get_conn()
     stats = dict(conn.execute(
         """SELECT (SELECT COUNT(*) FROM documentos) AS total_docs,
-                  (SELECT COALESCE(SUM(paginas), 0) FROM archivos) AS total_pages,
-                  (SELECT COUNT(*) FROM archivos WHERE necesita_ocr = 1) AS sin_texto""").fetchone())
+                  (SELECT COALESCE(SUM(paginas), 0) FROM archivos WHERE copia_de IS NULL) AS total_pages,
+                  (SELECT COUNT(*) FROM archivos WHERE necesita_ocr = 1 AND copia_de IS NULL) AS sin_texto""").fetchone())
+    dup = duplicados.contar(conn)
+    stats.update(duplicados=dup["copias"], duplicados_bytes=dup["bytes"])
     ultima = meta_get(conn, "ultima_sync")
     conn.close()
     cfg = load_config()
@@ -351,9 +354,41 @@ def get_doc(doc_id: int) -> Optional[Dict[str, Any]]:
     conn = get_conn()
     try:
         d["etiquetas"] = etiquetas.de_rutas(conn, [d["ruta_rel"]])[d["ruta_rel"]]
+        d["copias"] = [{"id": c["id"], "ruta_rel": c["ruta_rel"], "ruta_display": to_display_path(c["ruta"]), "mtime": c["mtime"]}
+                       for c in conn.execute("SELECT id, ruta, ruta_rel, mtime FROM archivos WHERE copia_de = ? ORDER BY mtime",
+                                             (d["archivo_id"],))]
     finally:
         conn.close()
     return d
+
+
+def get_archivo(archivo_id: int) -> Optional[Dict[str, Any]]:
+    """Cualquier archivo del índice, también las copias de un duplicado (que no tienen documento)."""
+    conn = get_conn()
+    try:
+        r = conn.execute("SELECT id, ruta, nombre FROM archivos WHERE id = ?", (archivo_id,)).fetchone()
+    finally:
+        conn.close()
+    return dict(r) if r else None
+
+
+def duplicados_listar() -> Dict[str, Any]:
+    conn = get_conn()
+    try:
+        return duplicados.listar(conn, meta_get(conn, "duplicados_revisados"))
+    finally:
+        conn.close()
+
+
+def duplicados_visto() -> Dict[str, Any]:
+    """Marca como revisados los duplicados detectados hasta ahora (dejan de salir como «nuevos»)."""
+    conn = get_conn()
+    try:
+        with conn:
+            meta_set(conn, "duplicados_revisados", datetime.datetime.now().isoformat(timespec="seconds"))
+    finally:
+        conn.close()
+    return {"status": "ok"}
 
 
 def render_page_png(doc: Dict[str, Any], rel_page: int, terms: List[str]) -> bytes:
@@ -525,6 +560,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(fuentes_listar())
             if route == "/api/etiquetas":
                 return self.send_json(etiquetas_listar())
+            if route == "/api/duplicados":
+                return self.send_json(duplicados_listar())
+
+            m = re.match(r"^/api/archivo/(\d+)/pdf$", route)
+            if m:  # copias de un duplicado (sin documento propio)
+                arch = get_archivo(int(m.group(1)))
+                if not arch or not os.path.exists(arch["ruta"]):
+                    return self.send_json({"error": "No se encuentra el archivo"}, status=404)
+                with open(arch["ruta"], "rb") as f:
+                    data = f.read()
+                ctype = mimetypes.guess_type(arch["nombre"])[0] or "application/octet-stream"
+                return self.send_bytes(data, ctype, filename=arch["nombre"], inline=True)
 
             m = re.match(r"^/api/doc/(\d+)(/pdf|/page_image)?$", route)
             if m:
@@ -619,7 +666,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(fuente_quitar(m.group(1)))
                 return self.send_json(fuente_modificar(m.group(1), payload))
 
-            if route.startswith(("/api/sync", "/api/open_location", "/api/etiquet", "/api/doc/")):
+            if route.startswith(("/api/sync", "/api/open_location", "/api/etiquet", "/api/doc/", "/api/duplicados")):
                 self._comprobar_fuente(payload)
 
             if route == "/api/sync":
@@ -627,11 +674,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"started": started, "estado": indexador.get_state()})
 
             if route == "/api/open_location":
-                doc = get_doc(int(payload.get("doc_id", 0)))
+                if payload.get("archivo_id"):
+                    doc = get_archivo(int(payload["archivo_id"]))
+                else:
+                    doc = get_doc(int(payload.get("doc_id", 0)))
                 if not doc:
                     return self.send_json({"error": "Documento no encontrado"}, status=404)
                 open_location(doc["ruta"])
                 return self.send_json({"status": "ok"})
+
+            if route == "/api/duplicados/resolver":
+                grupos = payload.get("grupos")
+                if not isinstance(grupos, list):
+                    raise ValueError("Petición no válida.")
+                return self.send_json(indexador.resolver_duplicados(grupos))
+            if route == "/api/duplicados/visto":
+                return self.send_json(duplicados_visto())
 
             if route == "/api/etiquetas":
                 conn = get_conn()
@@ -658,7 +716,7 @@ class Handler(BaseHTTPRequestHandler):
 
             m = re.match(r"^/api/doc/(\d+)/eliminar$", route)
             if m:
-                return self.send_json(indexador.eliminar(int(m.group(1))))
+                return self.send_json(indexador.eliminar(int(m.group(1)), con_copias=bool(payload.get("copias"))))
 
             m = re.match(r"^/api/doc/(\d+)/renombrar$", route)
             if m:

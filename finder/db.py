@@ -2,6 +2,10 @@
 """
 Esquema del índice de FinderJR (data/finder_index_<fuente>.db, uno por fuente): archivos,
 documentos y su índice de texto completo (SQLite FTS5, insensible a acentos).
+
+Duplicados (v3): los archivos idénticos byte a byte (mismo SHA-256) se indexan una sola vez. La copia
+principal tiene su fila en `documentos`; las demás solo están en `archivos`, con `copia_de` apuntando a
+la principal y sin texto, así que no salen repetidas en los resultados ni engordan el FTS.
 """
 
 import os
@@ -12,7 +16,7 @@ from typing import Optional
 from . import config, etiquetas
 from .config import ensure_data_dir
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -33,7 +37,9 @@ CREATE TABLE IF NOT EXISTS archivos (
     necesita_ocr  INTEGER DEFAULT 0,
     estado        TEXT DEFAULT 'OK',        -- OK | ERROR
     error         TEXT,
-    indexado_en   TEXT
+    indexado_en   TEXT,
+    hash          TEXT,                     -- SHA-256; solo si otro archivo tiene el mismo tamaño
+    copia_de      INTEGER REFERENCES archivos(id) ON DELETE SET NULL  -- id de la copia principal
 );
 
 CREATE TABLE IF NOT EXISTS documentos (
@@ -47,27 +53,30 @@ CREATE TABLE IF NOT EXISTS documentos (
     carpeta       TEXT NOT NULL,
     mtime         REAL NOT NULL DEFAULT 0,  -- fecha de modificación del archivo
     texto         TEXT,
-    sin_texto     INTEGER DEFAULT 0
+    sin_texto     INTEGER DEFAULT 0,
+    otras_rutas   TEXT                      -- rutas de sus copias idénticas (para encontrarlo también por ellas)
 );
 CREATE INDEX IF NOT EXISTS idx_docs_archivo ON documentos(archivo_id);
 CREATE INDEX IF NOT EXISTS idx_docs_mtime ON documentos(mtime);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS documentos_fts USING fts5(
-    nombre, ruta_rel, texto,
+    nombre, ruta_rel, texto, otras_rutas,
     content='documentos', content_rowid='id',
     tokenize='unicode61 remove_diacritics 2'
 );
 CREATE TRIGGER IF NOT EXISTS documentos_ai AFTER INSERT ON documentos BEGIN
-    INSERT INTO documentos_fts(rowid, nombre, ruta_rel, texto) VALUES (new.id, new.nombre, new.ruta_rel, new.texto);
+    INSERT INTO documentos_fts(rowid, nombre, ruta_rel, texto, otras_rutas)
+    VALUES (new.id, new.nombre, new.ruta_rel, new.texto, new.otras_rutas);
 END;
 CREATE TRIGGER IF NOT EXISTS documentos_ad AFTER DELETE ON documentos BEGIN
-    INSERT INTO documentos_fts(documentos_fts, rowid, nombre, ruta_rel, texto)
-    VALUES ('delete', old.id, old.nombre, old.ruta_rel, old.texto);
+    INSERT INTO documentos_fts(documentos_fts, rowid, nombre, ruta_rel, texto, otras_rutas)
+    VALUES ('delete', old.id, old.nombre, old.ruta_rel, old.texto, old.otras_rutas);
 END;
-CREATE TRIGGER IF NOT EXISTS documentos_au AFTER UPDATE OF nombre, ruta_rel, texto ON documentos BEGIN
-    INSERT INTO documentos_fts(documentos_fts, rowid, nombre, ruta_rel, texto)
-    VALUES ('delete', old.id, old.nombre, old.ruta_rel, old.texto);
-    INSERT INTO documentos_fts(rowid, nombre, ruta_rel, texto) VALUES (new.id, new.nombre, new.ruta_rel, new.texto);
+CREATE TRIGGER IF NOT EXISTS documentos_au AFTER UPDATE OF nombre, ruta_rel, texto, otras_rutas ON documentos BEGIN
+    INSERT INTO documentos_fts(documentos_fts, rowid, nombre, ruta_rel, texto, otras_rutas)
+    VALUES ('delete', old.id, old.nombre, old.ruta_rel, old.texto, old.otras_rutas);
+    INSERT INTO documentos_fts(rowid, nombre, ruta_rel, texto, otras_rutas)
+    VALUES (new.id, new.nombre, new.ruta_rel, new.texto, new.otras_rutas);
 END;
 """
 
@@ -137,6 +146,29 @@ def _migrate_v1(conn: sqlite3.Connection) -> None:
     conn.execute("VACUUM;")
 
 
+def _asegurar_v3(conn: sqlite3.Connection) -> None:
+    """v2 -> v3: columnas de duplicados, sin volver a extraer nada. Idempotente.
+    El índice FTS gana la columna otras_rutas: se recrea y se reconstruye desde `documentos` (una sola vez,
+    alrededor de un minuto con ~14.000 documentos)."""
+    if "otras_rutas" not in {r[1] for r in conn.execute("PRAGMA table_info(documentos)")}:
+        with conn:
+            conn.execute("ALTER TABLE documentos ADD COLUMN otras_rutas TEXT;")
+    if "otras_rutas" not in {r[1] for r in conn.execute("PRAGMA table_info(documentos_fts)")}:
+        with conn:
+            _drop_fts(conn)
+            conn.executescript(_SCHEMA)
+            conn.execute("INSERT INTO documentos_fts(documentos_fts) VALUES ('rebuild');")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(archivos)")}
+    with conn:
+        if "hash" not in cols:
+            conn.execute("ALTER TABLE archivos ADD COLUMN hash TEXT;")
+        if "copia_de" not in cols:
+            conn.execute("ALTER TABLE archivos ADD COLUMN copia_de INTEGER REFERENCES archivos(id) ON DELETE SET NULL;")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_arch_size ON archivos(size);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_arch_hash ON archivos(hash) WHERE hash IS NOT NULL;")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_arch_copia ON archivos(copia_de) WHERE copia_de IS NOT NULL;")
+
+
 def init_db(fid: Optional[str] = None) -> None:
     fid = fid or config.fuente_activa_id()
     with _INIT_LOCK:
@@ -149,13 +181,15 @@ def _init_db(fid: str) -> None:
     ver = conn.execute("PRAGMA user_version;").fetchone()[0]
     if ver == 1:
         _migrate_v1(conn)
-    elif ver not in (0, SCHEMA_VERSION):
+    elif ver not in (0, 2, SCHEMA_VERSION):
         with conn:
             _drop_fts(conn)
             for t in ("documentos", "archivos", "meta") + _TABLAS_V1:
                 conn.execute(f"DROP TABLE IF EXISTS {t};")
     with conn:
         conn.executescript(_SCHEMA)
+    _asegurar_v3(conn)
+    with conn:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
     etiquetas.init_schema(conn)
     conn.close()

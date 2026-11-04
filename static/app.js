@@ -91,7 +91,7 @@ function fmtNum(n) {
 function fmtSize(bytes) {
   if (!bytes) return "—";
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024).toFixed(1).replace(".", ",")} MB`;
 }
 
 function showToast(msg, duration = 3800, action = null) {
@@ -170,6 +170,11 @@ async function loadInfo() {
       ? "Sin carpeta configurada: indícala en Preferencias"
       : `${data.folder_display}${data.folder_exists ? "" : " (no accesible)"} — ${fmtNum(st.total_docs)} documentos ` +
         `(${fmtNum(st.total_pages)} págs.) · ${fmtNum(st.sin_texto)} escaneados sin texto`;
+    const nDup = st.duplicados || 0;
+    document.getElementById("btnDuplicados").style.display = nDup ? "" : "none";
+    document.getElementById("dupsCount").textContent = fmtNum(nDup);
+    document.getElementById("btnDuplicados").title =
+      `${fmtNum(nDup)} copias idénticas (${fmtSize(st.duplicados_bytes || 0)}): solo se indexa uno de cada grupo. Revísalas y elimina las que sobren`;
     if (data.ui_layout && !window._layoutInitializedFromDisk) {
       window._layoutInitializedFromDisk = true;
       applyPanelLayout(data.ui_layout, false);
@@ -251,19 +256,30 @@ function renderGridRows() {
       const sel = it.id === state.selectedDocId ? "selected" : "";
       const pags = it.num_paginas > 1 ? `${it.num_paginas} págs.` : "1 pág.";
       const ocr = it.sin_texto ? `<span class="ocr-badge" title="Escaneado sin capa de texto: solo se encuentra por nombre y carpeta">OCR</span>` : "";
+      const copias = it.copias
+        ? `<span class="copias-badge" title="Hay ${it.copias} ${it.copias === 1 ? "copia idéntica" : "copias idénticas"} en otras rutas (no se muestran aparte). Clic para revisarlas">+${it.copias}</span>`
+        : "";
       const snippet = it.snippet ? `<div class="snippet-match">${highlightText(it.snippet, terms)}</div>` : "";
       const dir = it.ruta_rel.replace(/[\\/][^\\/]*$/, "");
       const chk = state.checked.has(it.id);
+      // Si lo buscado está en la ruta de una copia idéntica (no en la del propio documento), se enseña
+      const enCopias = hasSearch() && it.otras_rutas
+        ? it.otras_rutas.split("\n").map((r) => highlightText(r, terms)).filter((h) => h.includes("<mark"))
+        : [];
+      const copiaMatch = enCopias.length
+        ? `<div class="copia-match" title="Coincide en la ruta de una copia idéntica de este documento">Copia: ${enCopias.slice(0, 2).join(" · ")}${enCopias.length > 2 ? " …" : ""}</div>`
+        : "";
       return `
         <tr data-id="${it.id}" class="${sel} ${chk ? "checked" : ""}">
           <td class="cell-check"><input type="checkbox" class="row-check" ${chk ? "checked" : ""} /></td>
           <td>
             <div class="date-cell">${formatDateFromEpoch(it.mtime)}</div>
-            <span class="date-sub">${pags}</span>${ocr}
+            <span class="date-sub">${pags}</span>${ocr}${copias}
           </td>
           <td>
             <div class="doc-name" title="Doble clic para cambiar el nombre">${highlightText(it.nombre, terms)}</div>
             ${tagPillsHtml(it.etiquetas)}
+            ${copiaMatch}
             ${hasSearch() ? snippet : ""}
           </td>
           <td>
@@ -281,6 +297,7 @@ function renderGridRows() {
         return;
       }
       if (e.target.closest(".rename-box")) return;
+      if (e.target.closest(".copias-badge")) return openDupsModal(id);
       if (e.ctrlKey || e.metaKey) return toggleCheck(idx, !state.checked.has(id), false);
       if (e.shiftKey && state.lastCheckIdx !== null) return toggleCheck(idx, true, true);
       selectDocument(id, false);
@@ -320,6 +337,7 @@ async function selectDocument(docId, scrollIntoView = true) {
       doc.ruta_rel,
     ].join("  ·  ");
     renderPreviewTags();
+    renderPreviewCopias();
     document.getElementById("previewToolbar").style.display = "flex";
     document.getElementById("previewPlaceholder").style.display = "none";
     document.getElementById("btnDownloadSinglePdf").href = `/api/doc/${doc.id}/pdf?download=1${fuenteQuery()}`;
@@ -403,8 +421,13 @@ async function pollStatus() {
     updateIndexProgress(estado);
     if (state.wasIndexing && !estado.activo && !state.renaming) {
       const u = estado.ultimo || {};
-      if (u.status === "ok" && (u.added || u.updated || u.removed)) {
-        showToast(`${nombreFuente()} actualizada: +${fmtNum(u.added)} nuevos, ${fmtNum(u.updated)} modificados, ${fmtNum(u.removed)} eliminados.`);
+      if (u.status === "ok" && (u.added || u.updated || u.removed || u.duplicados)) {
+        const dup = u.duplicados ? ` · ${fmtNum(u.duplicados)} ${u.duplicados === 1 ? "duplicado detectado" : "duplicados detectados"} (no se indexan)` : "";
+        showToast(
+          `${nombreFuente()} actualizada: +${fmtNum(u.added)} nuevos, ${fmtNum(u.updated)} modificados, ${fmtNum(u.removed)} eliminados${dup}.`,
+          u.duplicados ? 7000 : 3800,
+          u.duplicados ? { label: "Revisar", fn: () => openDupsModal() } : null
+        );
         await loadInfo();
         await runSearch(false);
       }
@@ -755,6 +778,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (tagPopoverOpen()) return closeTagPopover();
       if (document.getElementById("tagsModal").style.display !== "none") return closeTagsModal();
       if (deleteModalOpen()) return closeDeleteModal();
+      if (dupsModalOpen()) return closeDupsModal();
       if (state.checked.size && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return clearChecks();
     }
     if (e.altKey && !e.ctrlKey && !e.metaKey && /^Digit[1-9]$/.test(e.code) && !state.renaming && !modalAbierto()) {
@@ -765,7 +789,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     }
     if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName) && document.activeElement.type !== "checkbox") return;
-    if (deleteModalOpen()) return;
+    if (deleteModalOpen() || dupsModalOpen()) return;
     if (e.key === "Delete" && state.selectedDocId && !state.renaming) {
       e.preventDefault();
       return openDeleteModal();
@@ -941,6 +965,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   })();
 
   initTagsUI();
+  initDupsUI();
   document.getElementById("btnDelete").addEventListener("click", openDeleteModal);
   document.getElementById("btnCancelDelete").addEventListener("click", closeDeleteModal);
   document.getElementById("btnCloseDelete").addEventListener("click", closeDeleteModal);
@@ -1471,6 +1496,14 @@ function openDeleteModal() {
   document.getElementById("deleteName").textContent = doc.nombre;
   document.getElementById("deletePath").textContent = doc.ruta_display || doc.ruta_rel;
   document.getElementById("deleteTags").innerHTML = tagPillsHtml(doc.etiquetas);
+  const n = (doc.copias || []).length;
+  document.getElementById("deleteCopiasBox").style.display = n ? "" : "none";
+  document.getElementById("deleteCopias").checked = false;
+  document.getElementById("deleteCopiasN").textContent = n === 1 ? "1 copia idéntica" : `${n} copias idénticas`;
+  document.getElementById("deleteCopiasHelp").textContent = n
+    ? `Si no la marcas, el documento sigue en FinderJR (con sus etiquetas) en la ruta de la copia: ${doc.copias[0].ruta_display}` +
+      (n > 1 ? ` y ${n - 1} más.` : ".")
+    : "";
   const btn = document.getElementById("btnConfirmDelete");
   btn.disabled = false;
   document.getElementById("deleteModal").style.display = "flex";
@@ -1487,8 +1520,17 @@ async function confirmDelete() {
   const btn = document.getElementById("btnConfirmDelete");
   btn.disabled = true;
   try {
-    const r = await apiPost(`/api/doc/${doc.id}/eliminar`, {});
+    const r = await apiPost(`/api/doc/${doc.id}/eliminar`, { copias: document.getElementById("deleteCopias").checked });
     closeDeleteModal();
+    if (r.conservado) {
+      // Tenía copias: el documento sigue, ahora en la ruta de una de ellas
+      showToast(`«${r.nombre}» enviado a la Papelera. El documento sigue en FinderJR con su copia: ${r.conservado}`, 7000);
+      await runSearch(false, { keepPreview: true });
+      selectDocument(doc.id, false);
+      loadInfo();
+      loadEtiquetas();
+      return;
+    }
     // Quitarlo de la lista y pasar al siguiente
     const idx = state.items.findIndex((x) => x.id === doc.id);
     if (idx >= 0) state.items.splice(idx, 1);
@@ -1507,7 +1549,8 @@ async function confirmDelete() {
       document.getElementById("prevTitle").textContent = "No hay más documentos en los resultados";
       document.getElementById("prevSubtitle").textContent = "";
     }
-    showToast(`«${r.nombre}» enviado a la Papelera de reciclaje.`, 5000);
+    const extra = r.copias_eliminadas ? ` junto con ${r.copias_eliminadas} ${r.copias_eliminadas === 1 ? "copia" : "copias"}` : "";
+    showToast(`«${r.nombre}» enviado a la Papelera de reciclaje${extra}.`, 5000);
     loadInfo();
     loadEtiquetas();
   } catch (err) {
@@ -1604,4 +1647,180 @@ function resetPreview() {
   document.getElementById("prevTitle").textContent = "Haz clic en cualquier fila del listado para previsualizar el documento";
   document.getElementById("prevTitle").title = "";
   document.getElementById("prevSubtitle").textContent = "Puedes usar las teclas ↑ y ↓ del teclado para recorrer los resultados rápidamente.";
+}
+
+// ============================================================================
+// DUPLICADOS (archivos idénticos byte a byte: se indexa uno por grupo; el usuario decide cuál conservar)
+// ============================================================================
+
+const dups = { grupos: [], keep: new Map(), copias: 0, bytes: 0, busy: false, foco: null };
+
+function dupsModalOpen() {
+  return document.getElementById("dupsModal").style.display !== "none";
+}
+
+function renderPreviewCopias() {
+  const el = document.getElementById("prevCopias");
+  const n = (state.selectedDoc && state.selectedDoc.copias ? state.selectedDoc.copias : []).length;
+  el.style.display = n ? "" : "none";
+  if (n) el.innerHTML = `<svg class="icon"><use href="#ico-copy"></use></svg> ${n === 1 ? "1 copia idéntica" : `${n} copias idénticas`}`;
+}
+
+// focoDocId: abre el modal con el grupo de ese documento a la vista
+async function openDupsModal(focoDocId = null) {
+  closeTagPopover();
+  document.getElementById("dupsModal").style.display = "flex";
+  dups.foco = null;
+  await loadDups();
+  const g = focoDocId && dups.grupos.find((x) => x.miembros.some((m) => m.doc_id === focoDocId));
+  if (g) {
+    dups.foco = g.principal;
+    renderDups();
+    const el = document.querySelector(`.dups-group[data-g="${g.principal}"]`);
+    if (el) el.scrollIntoView({ block: "center" });
+  } else {
+    document.querySelector("#dupsModal .modal-body").scrollTop = 0;
+  }
+}
+
+function closeDupsModal() {
+  document.getElementById("dupsModal").style.display = "none";
+  // Lo visto deja de salir como «nuevo» la próxima vez
+  apiPost("/api/duplicados/visto", {}).catch(() => {});
+}
+
+async function loadDups() {
+  try {
+    const data = await (await fetch("/api/duplicados")).json();
+    if (data.error) throw new Error(data.error);
+    dups.grupos = data.grupos || [];
+    dups.copias = data.copias || 0;
+    dups.bytes = data.bytes || 0;
+    // Se respeta lo que el usuario ya había marcado; si no, la indexada (la que tiene etiquetas o la más antigua)
+    const keep = new Map();
+    dups.grupos.forEach((g) => {
+      const prev = dups.keep.get(g.principal);
+      keep.set(g.principal, g.miembros.some((m) => m.id === prev) ? prev : g.miembros.find((m) => m.principal).id);
+    });
+    dups.keep = keep;
+    renderDups();
+  } catch (err) {
+    document.getElementById("dupsList").innerHTML = `<div class="dups-empty">Error: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderDups() {
+  const n = dups.grupos.length;
+  document.getElementById("dupsResumen").textContent = n
+    ? `${fmtNum(n)} ${n === 1 ? "grupo" : "grupos"} · ${fmtNum(dups.copias)} ${dups.copias === 1 ? "copia sobrante" : "copias sobrantes"} · ${fmtSize(dups.bytes)}`
+    : "Sin duplicados";
+  const btnTodos = document.getElementById("btnDupsTodos");
+  btnTodos.style.display = n > 1 ? "" : "none";
+  btnTodos.disabled = dups.busy;
+  const list = document.getElementById("dupsList");
+  if (!n) {
+    list.innerHTML = `<div class="dups-empty">No hay archivos duplicados en <b>${escapeHtml(nombreFuente())}</b>.</div>`;
+    return;
+  }
+  list.innerHTML = dups.grupos
+    .map((g) => {
+      const keep = dups.keep.get(g.principal);
+      const sobran = g.miembros.length - 1;
+      const filas = g.miembros
+        .map((m) => {
+          const dir = m.ruta_rel.replace(/[\\/][^\\/]*$/, "");
+          const marcas =
+            (m.principal ? `<span class="dups-tag indexado" title="Es la que aparece en los resultados">indexado</span>` : "") +
+            (m.nuevo ? `<span class="dups-tag nuevo" title="Detectado desde la última vez que revisaste los duplicados">nuevo</span>` : "");
+          return `
+          <div class="dups-member ${m.id === keep ? "keep" : "drop"}" data-id="${m.id}" title="${m.id === keep ? "Se conserva" : "Clic para conservar este en lugar del marcado"}">
+            <input type="radio" name="keep-${g.principal}" ${m.id === keep ? "checked" : ""} aria-label="Conservar este" />
+            <div>
+              <div class="dups-name">${escapeHtml(m.nombre)}${marcas}</div>
+              <div class="dups-path">${escapeHtml(dir === m.ruta_rel ? "(raíz)" : dir)}</div>
+              ${tagPillsHtml(m.etiquetas)}
+            </div>
+            <div class="dups-date" title="Fecha de modificación">${formatDateFromEpoch(m.mtime)}</div>
+            <div class="dups-actions">
+              <a class="btn btn-xs" href="/api/archivo/${m.id}/pdf?${fuenteQuery().slice(1)}" target="_blank" title="Abrir en una pestaña nueva"><svg class="icon"><use href="#ico-external-link"></use></svg></a>
+              <button type="button" class="btn btn-xs" data-act="carpeta" title="Mostrar en el Explorador de Windows"><svg class="icon"><use href="#ico-folder-open"></use></svg></button>
+            </div>
+          </div>`;
+        })
+        .join("");
+      return `
+        <div class="dups-group ${g.principal === dups.foco ? "focus" : ""}" data-g="${g.principal}">
+          <div class="dups-group-head">
+            <span>${g.miembros.length} archivos idénticos · ${fmtSize(g.size)} cada uno</span>
+            <button type="button" class="btn btn-xs btn-danger" data-act="grupo" ${dups.busy ? "disabled" : ""}>
+              Eliminar ${sobran === 1 ? "la copia" : `las ${sobran} copias`}
+            </button>
+          </div>
+          ${filas}
+        </div>`;
+    })
+    .join("");
+}
+
+function dupsPlan(g) {
+  const keep = dups.keep.get(g.principal);
+  return { conservar: keep, eliminar: g.miembros.filter((m) => m.id !== keep).map((m) => m.id) };
+}
+
+async function resolverDups(grupos) {
+  if (dups.busy || !grupos.length) return;
+  dups.busy = true;
+  renderDups();
+  try {
+    const r = await apiPost("/api/duplicados/resolver", { grupos });
+    const errs = r.errores || [];
+    const ok = r.eliminados
+      ? `${fmtNum(r.eliminados)} ${r.eliminados === 1 ? "copia enviada" : "copias enviadas"} a la Papelera (${fmtSize(r.bytes)}).`
+      : "No se ha eliminado nada.";
+    showToast(errs.length ? `${ok} ${errs.length} con problemas: ${errs.slice(0, 3).join(" · ")}` : ok, errs.length ? 10000 : 5000);
+  } catch (err) {
+    showToast(err.message, 7000);
+  } finally {
+    dups.busy = false;
+  }
+  await loadDups();
+  loadInfo();
+  loadEtiquetas();
+  await runSearch(false, { keepPreview: true });
+  if (state.selectedDocId) selectDocument(state.selectedDocId, false);
+}
+
+function initDupsUI() {
+  document.getElementById("btnDuplicados").addEventListener("click", () => openDupsModal());
+  document.getElementById("btnCloseDups").addEventListener("click", closeDupsModal);
+  document.getElementById("btnDoneDups").addEventListener("click", closeDupsModal);
+  document.getElementById("prevCopias").addEventListener("click", () => state.selectedDocId && openDupsModal(state.selectedDocId));
+  document.getElementById("btnDupsTodos").addEventListener("click", () => {
+    const planes = dups.grupos.map(dupsPlan);
+    const n = planes.reduce((a, p) => a + p.eliminar.length, 0);
+    if (!confirm(`¿Enviar a la Papelera ${fmtNum(n)} copias (${fmtSize(dups.bytes)}) de ${fmtNum(planes.length)} grupos, ` +
+                 "conservando en cada grupo el archivo marcado?")) return;
+    resolverDups(planes);
+  });
+  document.getElementById("dupsList").addEventListener("click", async (e) => {
+    const grupoEl = e.target.closest(".dups-group");
+    if (!grupoEl) return;
+    const g = dups.grupos.find((x) => String(x.principal) === grupoEl.dataset.g);
+    if (!g) return;
+    const act = e.target.closest("[data-act]");
+    if (act && act.dataset.act === "grupo") return resolverDups([dupsPlan(g)]);
+    const fila = e.target.closest(".dups-member");
+    if (!fila) return;
+    if (act && act.dataset.act === "carpeta") {
+      try {
+        await apiPost("/api/open_location", { archivo_id: parseInt(fila.dataset.id, 10) });
+      } catch (err) {
+        showToast(err.message, 5000);
+      }
+      return;
+    }
+    if (e.target.closest("a")) return; // abrir el PDF
+    dups.keep.set(g.principal, parseInt(fila.dataset.id, 10));
+    renderDups();
+  });
 }

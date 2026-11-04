@@ -71,6 +71,23 @@ por defecto). El archivo va a la **Papelera de reciclaje** de Windows y sale del
 desde la Papelera, la siguiente sincronización lo vuelve a indexar con sus etiquetas. En unidades de red
 (sin Papelera) no se permite.
 
+Si el documento tiene copias idénticas, el modal ofrece eliminarlas también; si no se marca, el documento
+sigue en FinderJR (con sus etiquetas) en la ruta de una de sus copias.
+
+## Duplicados
+
+Los archivos **idénticos byte a byte** (misma huella SHA-256) se indexan una sola vez: en Resultados sale
+un único documento con la marca **+N** (sus copias). También se encuentra buscando por el nombre o la
+carpeta de cualquiera de sus copias. Solo se compara el contenido exacto: dos facturas distintas con el
+mismo texto **no** son duplicados.
+
+- Cuando llega un archivo idéntico a otro ya indexado, no se lee su texto: se registra como copia y
+  aparece el botón **Duplicados (N)** en la barra superior. FinderJR nunca borra nada por su cuenta.
+- En el panel **Duplicados** se marca en cada grupo el archivo que se quiere conservar (por defecto, el
+  que tiene etiquetas o el más antiguo) y los demás van a la **Papelera de reciclaje**, grupo a grupo o
+  todos a la vez. Justo antes de borrar se vuelve a comprobar que siguen siendo idénticos. Las etiquetas
+  de lo eliminado pasan a lo que se conserva.
+
 ## Arquitectura
 
 ```
@@ -78,6 +95,7 @@ app_finder.py          Servidor HTTP + API REST (ThreadingHTTPServer, sin framew
 finder/config.py       finder_config.json (fuentes) y rutas Windows/WSL
 finder/db.py           Índice SQLite + FTS5, uno por fuente (data/finder_index_<fuente>.db)
 finder/etiquetas.py    Etiquetas manuales (etiquetas_<fuente>.db)
+finder/duplicados.py   Duplicados exactos (SHA-256): copias registradas sin indexar su texto
 finder/extraccion.py   Extracción de texto con PyMuPDF
 finder/indexador.py    Sincronización incremental en paralelo + proceso en segundo plano
 static/                Interfaz (estilo de cBank)

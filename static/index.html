@@ -123,6 +123,10 @@
       <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
       <path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/>
     </symbol>
+    <symbol id="ico-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="9" width="12" height="12" rx="2"/>
+      <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>
+    </symbol>
   </svg>
 
   <!-- BARRA SUPERIOR -->
@@ -151,6 +155,9 @@
         <span id="indexProgressText">Indexando…</span>
         <div class="bar"><span id="indexProgressBar"></span></div>
       </div>
+      <button class="btn btn-secondary btn-dups" id="btnDuplicados" style="display: none;" title="Archivos idénticos byte a byte: solo se indexa uno de cada grupo. Revísalos y elimina las copias que sobren">
+        <svg class="icon"><use href="#ico-copy"></use></svg> Duplicados <span class="dups-count" id="dupsCount">0</span>
+      </button>
       <button class="btn btn-secondary" id="btnSync" title="Buscar documentos nuevos o modificados en la Biblioteca">
         <svg class="icon"><use href="#ico-refresh"></use></svg> Sincronizar
       </button>
@@ -312,6 +319,7 @@
           <h3 id="prevTitle" title="">Haz clic en cualquier fila del listado para previsualizar el documento</h3>
           <p id="prevSubtitle" class="preview-meta">Puedes usar las teclas ↑ y ↓ del teclado para recorrer los resultados rápidamente.</p>
           <div class="prev-tags" id="prevTags" style="display: none;"></div>
+          <button type="button" class="prev-copias" id="prevCopias" style="display: none;" title="Ver las copias idénticas y decidir cuál conservar"></button>
         </div>
 
         <div class="preview-toolbar" id="previewToolbar" style="display: none;">
@@ -467,12 +475,41 @@
           <span id="deletePath"></span>
           <div id="deleteTags"></div>
         </div>
+        <div class="delete-copias" id="deleteCopiasBox" style="display: none;">
+          <label><input type="checkbox" id="deleteCopias" /> Eliminar también sus <b id="deleteCopiasN"></b></label>
+          <small class="form-help" id="deleteCopiasHelp"></small>
+        </div>
         <small class="form-help">Desaparece de la carpeta y de FinderJR. Se puede recuperar desde la Papelera de Windows:
           al restaurarlo, FinderJR lo vuelve a indexar con sus etiquetas.</small>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" id="btnCancelDelete">Cancelar</button>
         <button class="btn btn-danger" id="btnConfirmDelete"><svg class="icon"><use href="#ico-trash"></use></svg> Enviar a la Papelera</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DUPLICADOS (archivos idénticos byte a byte) -->
+  <div class="modal-backdrop" id="dupsModal" style="display: none;">
+    <div class="modal-dialog modal-dups">
+      <div class="modal-header">
+        <h3 class="modal-title"><svg class="icon"><use href="#ico-copy"></use></svg> Duplicados</h3>
+        <button class="modal-close" id="btnCloseDups">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="dups-resumen">
+          <div>
+            <strong id="dupsResumen"></strong>
+            <small class="form-help">Archivos idénticos byte a byte. Solo se indexa uno de cada grupo, así que en los resultados
+              no salen repetidos. En cada grupo, marca el que quieres conservar: los demás van a la Papelera de reciclaje.
+              Antes de borrar se comprueba de nuevo que siguen siendo idénticos.</small>
+          </div>
+          <button class="btn btn-sm btn-danger" id="btnDupsTodos"><svg class="icon"><use href="#ico-trash"></use></svg> <span id="btnDupsTodosText">Eliminar las copias de todos</span></button>
+        </div>
+        <div class="dups-list" id="dupsList"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnDoneDups">Cerrar</button>
       </div>
     </div>
   </div>
