@@ -6,6 +6,10 @@ etiquetas*.db
 etiquetas*.db-wal
 etiquetas*.db-shm
 
+# Texto reconocido por OCR (caché por huella del archivo; se regenera, pero tarda: conviene copiarlo)
+ocr_cache.db
+ocr_cache.db-journal
+
 # Configuracion local de cada puesto (ruta de la Biblioteca, anchos de paneles...)
 finder_config.json
 finder_config.json.tmp

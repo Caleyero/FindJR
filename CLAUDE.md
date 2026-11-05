@@ -50,6 +50,7 @@ finder/db.py           Esquema SQLite (data/finder_index_<fuente>.db), FTS5, mig
 finder/extraccion.py   Texto: PDF con PyMuPDF (máx. max_pages_text páginas); docx/xlsx con la stdlib. Máx. 400.000 caracteres
 finder/indexador.py    Sincronización incremental en paralelo + bucle en segundo plano
 finder/etiquetas.py    Etiquetas manuales (etiquetas_<fuente>.db, adjunta como «et» en cada conexión)
+finder/ocr.py          OCR de los escaneados con el OCR de Windows (ocr_windows.ps1) + caché ocr_cache.db
 finder/remoto.py       Acceso desde Internet: verificación del JWT de Cloudflare Access y lista blanca de rutas
 finder/duplicados.py   Duplicados exactos (SHA-256): huellas, promoción de copias, consolidación, listado
 static/                index.html, app.js, styles.css (estilo cBank)
@@ -103,7 +104,7 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
   `#mobileNav`, el botón «atrás» vuelve al panel anterior con `history.pushState`); sin la pestaña
   «Visor PDF» (el iframe de PDF no funciona en Android). Sirve igual en local con ventana estrecha.
 
-### Índice (`finder/db.py`, `SCHEMA_VERSION = 3`)
+### Índice (`finder/db.py`, `SCHEMA_VERSION = 4`)
 - `archivos`: un registro por archivo físico (ruta, size, mtime, páginas, `necesita_ocr`, estado OK/ERROR).
 - `documentos`: hoy 1:1 con `archivos` (los campos `primera_pag/ultima_pag` existen por si algún día se
   parte un PDF en varios documentos). `mtime` es la fecha de modificación del archivo: la única fecha que
@@ -115,6 +116,29 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
 - v3 (noviembre 2026): `archivos.hash` y `archivos.copia_de`, `documentos.otras_rutas` (también en el FTS).
   `_asegurar_v3` migra un índice v2 sin reindexar (recrea y reconstruye el FTS: ~3 s). Ojo: el código
   anterior a v3 trata la versión 3 como desconocida y **borra el índice** (habría que reindexar).
+- v4 (noviembre 2026): `archivos.ocr` (NULL no intentado · 1 texto por OCR · 2 sin resultado). `_asegurar_v4`
+  añade la columna sin reindexar. Mismo aviso: el código anterior a v4 borraría un índice v4.
+
+### OCR de los escaneados (`finder/ocr.py`, noviembre 2026, a petición del usuario)
+- Motor: **OCR integrado de Windows** (`Windows.Media.Ocr`, idioma `es-ES`), sin instalar nada ni
+  dependencias nuevas (se descartó Tesseract por eso). PyMuPDF dibuja cada página a 300 ppp en grises
+  (máx. 9.000 px de lado; el motor admite 10.000) y `finder/ocr_windows.ps1` (PowerShell + WinRT) devuelve el
+  texto en un JSON. ~1 s por página. Reconoce bien lo impreso; lo manuscrito sale como basura o vacío.
+  Solo en Windows (`ocr.disponible()`, comprobado una vez por proceso); en WSL no hay OCR.
+- El dibujado va en un proceso aparte (`_ocr_aparte`, un `ProcessPoolExecutor` de 1): en el mismo proceso
+  el GIL frenaba al servidor (búsquedas de 1,7 s mientras trabajaba el OCR).
+- Caché **`ocr_cache.db`** (raíz, junto a las etiquetas; fuera de `data/`) por SHA-256 del archivo: reindexar,
+  mover o renombrar no repite el OCR. `_store` la consulta al indexar un escaneado. Guarda también los
+  intentos sin resultado (`texto = ''`) para no repetirlos.
+- Con ≥ 60 caracteres el texto sustituye al de `documentos` y `sin_texto`/`necesita_ocr` pasan a 0
+  (`ocr.aplicar`, también en sus copias idénticas). Lo reconocido se busca como cualquier texto; la vista de
+  página no lo resalta (el PDF sigue sin capa de texto), la pestaña «Texto» sí.
+- Segundo plano: `ocr_loop` (hilo propio) procesa de uno en uno los pendientes de todas las fuentes
+  (los más recientes primero); lo despierta `sync` cuando hay archivos nuevos o modificados, y si no, cada
+  15 min. Un error marca `ocr = 2` (no se reintenta solo). `"ocr_auto": false` en `finder_config.json`
+  lo desactiva. Progreso en `/api/status` → `ocr` (la barra de la cabecera dice «OCR n/total»).
+- Botón «OCR» / «Repetir OCR» de la previsualización (solo PDF escaneados o ya reconocidos, solo en el PC):
+  `POST /api/doc/<id>/ocr`, síncrono y sin caché.
 
 ### Duplicados (`finder/duplicados.py`, noviembre 2026, a petición del usuario)
 - Solo **idénticos byte a byte** (SHA-256). Se descartó comparar el texto: facturas distintas
@@ -201,18 +225,23 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
   más peso para el nombre de archivo y la ruta que para el texto. Otras ordenaciones: fecha (por defecto descendente) y nombre.
 - Resaltado: `terms` se devuelve al cliente; el fragmento se localiza con `_fold` (sin acentos y con la
   misma longitud). La página PDF se renderiza a PNG con los términos resaltados (`/api/doc/<id>/page_image`).
+- Filtro de fecha `fecha=AAAA-MM-DD` (día) o `AAAA-MM` (mes) sobre `d.mtime` en hora local
+  (`filtros_sql`, junto a los de etiquetas: CSV y `pdf_bundle` lo respetan). Lo pone el **calendario**
+  del panel de búsqueda (noviembre 2026, a petición del usuario): `GET /api/calendario?mes=AAAA-MM` + los
+  parámetros de la búsqueda devuelve los documentos por día que cumplen la búsqueda **sin** el filtro de
+  fecha, y el primer y último mes con resultados. Clic en un día o en el mes filtra; otro clic lo quita.
 - Referencia de rendimiento: < 0,1 s típico; el peor caso es ~1,2 s (prefijo corto con muchos aciertos
   ordenado por fecha).
 
 ### API
 Por el listener remoto solo se admiten los GET y los POST de `remoto.RUTAS_POST_REMOTAS`.
-GET `/api/info`, `/api/search`, `/api/status`, `/api/config`, `/api/doc/<id>[/pdf|/page_image]`,
+GET `/api/info`, `/api/search`, `/api/status`, `/api/calendario`, `/api/config`, `/api/doc/<id>[/pdf|/page_image]`,
 `/api/export/csv`, `/api/export/pdf_bundle` (une hasta 300 PDF filtrados), `/api/etiquetas` (con recuentos),
 `/api/fuentes`, `/api/duplicados`, `/api/archivo/<id>/pdf` (también copias).
 POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en el archivo), `/api/open_file` (lo abre con su programa),
 `/api/layout` (guarda anchos de paneles en `finder_config.json`), `/api/config`,
 `/api/etiquetas` (crear), `/api/etiquetas/<id>` (nombre/color/tecla), `/api/etiquetas/<id>/borrar`,
-`/api/etiquetar` (`etiqueta_id`, `accion` poner|quitar, `doc_ids` o `busqueda`), `/api/doc/<id>/renombrar`, `/api/doc/<id>/eliminar {copias}`,
+`/api/etiquetar` (`etiqueta_id`, `accion` poner|quitar, `doc_ids` o `busqueda`), `/api/doc/<id>/renombrar`, `/api/doc/<id>/eliminar {copias}`, `/api/doc/<id>/ocr`,
 `/api/duplicados/resolver {grupos: [{conservar, eliminar}]}`, `/api/duplicados/visto`,
 `/api/fuente/activar {id}`, `/api/fuentes` (crear), `/api/fuentes/<id>` (modificar), `/api/fuentes/<id>/borrar`.
 
@@ -269,8 +298,5 @@ POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en 
 
 ## Pendiente (por prioridad)
 
-1. **OCR** de los ~1.100 PDF escaneados (Tesseract en español) para que se encuentren por contenido;
-   hoy solo se encuentran por nombre y carpeta. Debe integrarse en la indexación incremental sin
-   repetir el OCR de lo ya procesado.
-2. **Formatos Office antiguos** (.doc/.xls, ~200 archivos): binarios OLE, no se pueden leer con la stdlib
+1. **Formatos Office antiguos** (.doc/.xls, ~200 archivos): binarios OLE, no se pueden leer con la stdlib
    de forma fiable. Opciones: convertirlos con Office/LibreOffice o una dependencia nueva (consultarlo).

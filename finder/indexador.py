@@ -8,6 +8,8 @@ Ciclo de sincronización:
   2. Calcula la huella (SHA-256) de los que comparten tamaño con otro: los idénticos a uno ya indexado
      se registran como copias, sin extraer su texto (finder/duplicados.py).
   3. Extrae el texto en paralelo (varios procesos) y lo guarda en lotes en el índice FTS5.
+  4. Los PDF escaneados (sin capa de texto) recuperan el texto de la caché de OCR si ya se reconocieron;
+     los demás los procesa después `ocr.ocr_loop` en segundo plano (finder/ocr.py).
 """
 
 import concurrent.futures as cf
@@ -21,7 +23,7 @@ import traceback
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import duplicados, etiquetas
+from . import duplicados, etiquetas, ocr
 from .config import excluded_dirs, fuente, load_config, to_display_path, to_local_path
 from .db import get_conn, init_db, meta_set
 from .extraccion import es_pdf, extract_text
@@ -107,14 +109,14 @@ def _store_copia(conn, item: Tuple[str, str, int, float], prev_id: Optional[int]
     """Registra un archivo idéntico a otro ya indexado: sin extraer su texto ni crear documento."""
     full, rel, size, mtime = item
     _quitar_previo(conn, prev_id)
-    p = conn.execute("SELECT paginas, necesita_ocr, estado, error FROM archivos WHERE id = ?", (principal_id,)).fetchone()
+    p = conn.execute("SELECT paginas, necesita_ocr, estado, error, ocr FROM archivos WHERE id = ?", (principal_id,)).fetchone()
     nombre = os.path.basename(full)
     conn.execute(
         """INSERT INTO archivos (ruta, ruta_rel, carpeta, nombre, ext, size, mtime, paginas, necesita_ocr, estado, error,
-                                 indexado_en, hash, copia_de)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                 indexado_en, hash, copia_de, ocr)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (full, rel, _carpeta(rel), nombre, os.path.splitext(nombre)[1].lower(), size, mtime, p["paginas"], p["necesita_ocr"],
-         p["estado"], p["error"], datetime.datetime.now().isoformat(timespec="seconds"), h, principal_id),
+         p["estado"], p["error"], datetime.datetime.now().isoformat(timespec="seconds"), h, principal_id, p["ocr"]),
     )
 
 
@@ -128,13 +130,22 @@ def _store(conn, item: Tuple[str, str, int, float], er: Dict[str, Any], prev_id:
     # Solo un PDF casi sin texto es un escaneado pendiente de OCR (un Word o Excel corto es solo corto)
     sin_texto = 1 if es_pdf(nombre) and len(texto.strip()) < 60 else 0
     paginas = er.get("paginas", 0) if ok else 0
+    estado_ocr = None
+    if ok and sin_texto:
+        # Escaneado: si ya se pasó por el OCR (misma huella), se reutiliza el texto reconocido
+        h = h or duplicados.huella(full)
+        previo = ocr.cache_buscar(h)
+        if previo is not None:
+            estado_ocr = 1 if ocr.con_texto(previo) else 2
+            if estado_ocr == 1:
+                texto, sin_texto = previo, 0
     cur = conn.execute(
         """INSERT INTO archivos (ruta, ruta_rel, carpeta, nombre, ext, size, mtime, paginas, necesita_ocr, estado, error,
-                                 indexado_en, hash)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                 indexado_en, hash, ocr)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (full, rel, carpeta, nombre, os.path.splitext(nombre)[1].lower(), size, mtime, paginas,
          sin_texto if ok else 0, "OK" if ok else "ERROR", None if ok else er.get("error"),
-         datetime.datetime.now().isoformat(timespec="seconds"), h),
+         datetime.datetime.now().isoformat(timespec="seconds"), h, estado_ocr),
     )
     n_pag = max(1, paginas)
     conn.execute(
@@ -274,6 +285,8 @@ def sync(force_reindex: bool = False, fid: Optional[str] = None) -> Dict[str, An
         conn.close()
         res["elapsed_sec"] = round(time.time() - t0, 1)
         _set_state(ultimo=res)
+        if res["added"] or res["updated"]:
+            ocr.despertar()  # por si hay escaneados nuevos
         return res
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()

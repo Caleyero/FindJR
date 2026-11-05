@@ -45,7 +45,18 @@ descartan los filtros de etiqueta y los documentos marcados.
 - Sin distinguir mayúsculas ni acentos; las palabras se buscan por su comienzo (`arrend` → arrendamiento).
 - Cifras con o sin punto de miles (`1224,00` = `1.224,00`) y separadores indiferentes (`B-06976` = `B06976`).
 - Orden: relevancia (BM25, con más peso al nombre de archivo y a la carpeta) o fecha de modificación del archivo.
-- Los escaneados sin capa de texto (marcados **OCR**) solo se encuentran por nombre y carpeta.
+- **Calendario** (fecha de modificación): cada día muestra cuántos documentos cumplen la búsqueda; clic en un
+  día (o en el nombre del mes) para ver solo los de esa fecha, otro clic para quitarlo.
+
+## OCR de los escaneados
+
+Los PDF escaneados sin capa de texto se pasan por el **OCR de Windows** (español; no hay que instalar nada)
+en segundo plano, de uno en uno: unos 20-30 minutos la primera vez (~940 documentos) y después solo los
+nuevos. Mientras tanto la cabecera muestra «OCR n/total», y los aún pendientes llevan la marca **OCR** (solo
+se encuentran por nombre y carpeta). Con el botón **OCR** de la previsualización se procesa uno al momento.
+Lo manuscrito no se reconoce. El texto reconocido se guarda en `ocr_cache.db` (no se repite al reindexar;
+conviene incluirlo en las copias de seguridad). Para desactivar el automático: `"ocr_auto": false` en
+`finder_config.json`.
 
 ## Etiquetas
 
@@ -115,6 +126,7 @@ finder/config.py       finder_config.json (fuentes) y rutas Windows/WSL
 finder/db.py           Índice SQLite + FTS5, uno por fuente (data/finder_index_<fuente>.db)
 finder/etiquetas.py    Etiquetas manuales (etiquetas_<fuente>.db)
 finder/duplicados.py   Duplicados exactos (SHA-256): copias registradas sin indexar su texto
+finder/ocr.py          OCR de los escaneados (OCR de Windows) con caché por huella
 finder/extraccion.py   Extracción de texto: PDF con PyMuPDF; docx/xlsx leyendo su XML (biblioteca estándar)
 finder/indexador.py    Sincronización incremental en paralelo + proceso en segundo plano
 static/                Interfaz (estilo de cBank)
@@ -123,5 +135,4 @@ tools/probar_api.py    Prueba de humo
 
 ## Pendiente
 
-- **OCR** de los ~1.100 PDF escaneados (Tesseract en español) para que sean buscables por contenido.
 - Formatos Office antiguos (.doc/.xls; ~200 archivos).

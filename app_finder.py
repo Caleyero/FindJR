@@ -26,6 +26,7 @@ import traceback
 import unicodedata
 import urllib.parse
 import webbrowser
+from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,7 +37,7 @@ if sys.stderr is None:
 
 import fitz  # PyMuPDF
 
-from finder import config, duplicados, etiquetas, indexador, remoto
+from finder import config, duplicados, etiquetas, indexador, ocr, remoto
 from finder.config import BASE_DIR, fuente, load_config, save_config, to_display_path
 from finder.db import borrar_indice, get_conn, init_db, meta_get, meta_set
 from finder.extraccion import SEPARADOR_PAGINA, es_pdf
@@ -140,6 +141,34 @@ def parse_search(params: Dict[str, str]) -> Dict[str, Any]:
     }
 
 
+def rango_fecha(valor: str) -> Optional[Tuple[float, float]]:
+    """«AAAA-MM-DD» (un día) o «AAAA-MM» (un mes) -> [inicio, fin) en segundos, en hora local."""
+    m = re.fullmatch(r"(\d{4})-(\d{2})(?:-(\d{2}))?", (valor or "").strip())
+    if not m:
+        return None
+    y, mes = int(m.group(1)), int(m.group(2))
+    try:
+        if m.group(3):
+            ini = datetime.datetime(y, mes, int(m.group(3)))
+            fin = ini + datetime.timedelta(days=1)
+        else:
+            ini = datetime.datetime(y, mes, 1)
+            fin = datetime.datetime(y + mes // 12, mes % 12 + 1, 1)
+    except ValueError:
+        return None
+    return ini.timestamp(), fin.timestamp()
+
+
+def filtros_sql(params: Dict[str, str]) -> Tuple[List[str], List[Any]]:
+    """Filtros que no son de texto: etiquetas y fecha de modificación (`fecha` = día o mes, del calendario)."""
+    clauses, sp = etiquetas.filtros_sql(params)
+    r = rango_fecha(params.get("fecha", ""))
+    if r:
+        clauses.append("d.mtime >= ? AND d.mtime < ?")
+        sp = sp + list(r)
+    return clauses, sp
+
+
 def build_where(ps: Dict[str, Any], params: Dict[str, str]) -> Tuple[str, List[Any]]:
     clauses, sp = ["1=1"], []
     if ps["match"]:
@@ -148,7 +177,7 @@ def build_where(ps: Dict[str, Any], params: Dict[str, str]) -> Tuple[str, List[A
     if ps["exclude"]:
         clauses.append("d.id NOT IN (SELECT rowid FROM documentos_fts WHERE documentos_fts MATCH ?)")
         sp.append(ps["exclude"])
-    et_clauses, et_sp = etiquetas.filtros_sql(params)
+    et_clauses, et_sp = filtros_sql(params)
     return " AND ".join(clauses + et_clauses), sp + et_sp
 
 
@@ -164,7 +193,7 @@ def run_query(params: Dict[str, str], limit: int, offset: int, cols: str) -> Tup
             if ps["exclude"]:
                 sql_from += " AND d.id NOT IN (SELECT rowid FROM documentos_fts WHERE documentos_fts MATCH ?)"
                 sp.append(ps["exclude"])
-            et_clauses, et_sp = etiquetas.filtros_sql(params)
+            et_clauses, et_sp = filtros_sql(params)
             for c in et_clauses:
                 sql_from += " AND " + c
             sp += et_sp
@@ -234,6 +263,27 @@ def query_documents(params: Dict[str, str]) -> Dict[str, Any]:
     return {"total_count": total, "limit": limit, "offset": offset, "terms": ps["terms"], "items": items}
 
 
+def calendario(params: Dict[str, str]) -> Dict[str, Any]:
+    """Documentos por día de un mes (`mes` = AAAA-MM) que cumplen la búsqueda actual, sin contar el filtro
+    de fecha (así el calendario muestra dónde hay resultados aunque haya un día elegido)."""
+    mes = (params.get("mes") or datetime.date.today().strftime("%Y-%m")).strip()
+    r = rango_fecha(mes) if len(mes) == 7 else None
+    if not r:
+        raise ValueError("Mes no válido (AAAA-MM).")
+    p = {k: v for k, v in params.items() if k != "fecha"}
+    where, sp = build_where(parse_search(p), p)
+    conn = get_conn()
+    try:
+        dias = Counter(datetime.datetime.fromtimestamp(m).day for (m,) in conn.execute(
+            f"SELECT d.mtime FROM documentos d WHERE {where} AND d.mtime >= ? AND d.mtime < ?", sp + list(r)))
+        lo, hi = conn.execute(f"SELECT MIN(d.mtime), MAX(d.mtime) FROM documentos d WHERE {where}", sp).fetchone()
+    finally:
+        conn.close()
+    fmt = lambda t: datetime.datetime.fromtimestamp(t).strftime("%Y-%m") if t else None  # noqa: E731
+    return {"mes": mes, "dias": {str(k): v for k, v in dias.items()}, "total": sum(dias.values()),
+            "primero": fmt(lo), "ultimo": fmt(hi)}
+
+
 def query_info() -> Dict[str, Any]:
     conn = get_conn()
     stats = dict(conn.execute(
@@ -249,7 +299,8 @@ def query_info() -> Dict[str, Any]:
     fi = indexador.folder_info(fte["id"])
     return {"stats": stats, "ultima_sync": ultima, "folder_display": fi["display"], "folder_exists": fi["exists"],
             "folder_configurada": fi["configurada"], "ui_layout": cfg.get("ui_layout", {}),
-            "estado": indexador.get_state(), "fuente": _fuente_publica(fte), "fuentes": fuentes_listar()["items"]}
+            "estado": indexador.get_state(), "ocr": ocr.estado(), "fuente": _fuente_publica(fte),
+            "fuentes": fuentes_listar()["items"]}
 
 
 # ------------------------------------------------------------------------------
@@ -345,7 +396,7 @@ def fuente_quitar(fid: str) -> Dict[str, Any]:
 def get_doc(doc_id: int) -> Optional[Dict[str, Any]]:
     conn = get_conn()
     r = conn.execute(
-        """SELECT d.*, a.ruta, a.size, a.paginas, a.necesita_ocr, a.estado, a.error
+        """SELECT d.*, a.ruta, a.size, a.paginas, a.necesita_ocr, a.estado, a.error, a.ocr
            FROM documentos d JOIN archivos a ON a.id = d.archivo_id WHERE d.id = ?""", (doc_id,)).fetchone()
     conn.close()
     if not r:
@@ -593,7 +644,9 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/search":
                 return self.send_json(query_documents(params))
             if route == "/api/status":
-                return self.send_json(dict(indexador.get_state(), activa=config.fuente_activa_id()))
+                return self.send_json(dict(indexador.get_state(), activa=config.fuente_activa_id(), ocr=ocr.estado()))
+            if route == "/api/calendario":
+                return self.send_json(calendario(params))
             if route == "/api/config":
                 return self.send_json({"config": load_config(), "folder": indexador.folder_info()})
             if route == "/api/fuentes":
@@ -770,6 +823,11 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 return self.send_json(indexador.eliminar(int(m.group(1)), con_copias=bool(payload.get("copias"))))
 
+            m = re.match(r"^/api/doc/(\d+)/ocr$", route)
+            if m:
+                res = ocr.ocr_documento(int(m.group(1)))
+                return self.send_json(dict(res, doc=get_doc(int(m.group(1)))))
+
             m = re.match(r"^/api/doc/(\d+)/renombrar$", route)
             if m:
                 res = indexador.renombrar(int(m.group(1)), str(payload.get("nombre", "")))
@@ -892,6 +950,9 @@ def main() -> None:
                          daemon=True, name="finder-remoto").start()
 
     threading.Thread(target=indexador.background_loop, args=(stop,), daemon=True, name="finder-bg").start()
+    # OCR de los escaneados (OCR de Windows) en segundo plano; `disponible()` se comprueba ya para la interfaz
+    threading.Thread(target=ocr.disponible, daemon=True, name="finder-ocr-check").start()
+    threading.Thread(target=ocr.ocr_loop, args=(stop,), daemon=True, name="finder-ocr").start()
     if "--no-auto-shutdown" not in sys.argv:
         threading.Thread(target=lifecycle_watchdog, args=(server,), daemon=True).start()
     if "--no-browser" not in sys.argv:

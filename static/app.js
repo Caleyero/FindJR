@@ -37,6 +37,14 @@ const state = {
   fuentes: [],
   folderConfigurada: true,
   remoto: false, // acceso desde Internet: solo consultar y etiquetar (el servidor lo impone igualmente)
+  // Calendario (fecha de modificación): filtro "AAAA-MM-DD" (día) o "AAAA-MM" (mes) y mes que se ve
+  fecha: "",
+  calMes: "",
+  // OCR de los escaneados (OCR de Windows, en segundo plano o con el botón)
+  ocrDisponible: false,
+  ocrActivo: false,
+  ocrHechos: 0,
+  ocrEnCurso: false, // OCR pedido con el botón
 };
 
 // ============================================================================
@@ -176,6 +184,7 @@ function searchParamsObject() {
   if (state.filtroEt.size) o.et = [...state.filtroEt].join(",");
   if (state.filtroEtx.size) o.etx = [...state.filtroEtx].join(",");
   if (state.sinEt) o.sin_et = "1";
+  if (state.fecha) o.fecha = state.fecha;
   return o;
 }
 
@@ -219,6 +228,7 @@ async function loadInfo() {
     if (await aplicarFuente(data)) return; // ha cambiado en otra pestaña: ya se ha recargado todo
     state.remoto = !!data.remoto;
     document.body.classList.toggle("remoto", state.remoto);
+    state.ocrDisponible = !!(data.ocr && data.ocr.disponible);
     const st = data.stats || {};
     document.getElementById("folderStatusText").textContent = !data.folder_configurada
       ? "Sin carpeta configurada: indícala en Preferencias"
@@ -260,6 +270,7 @@ async function runSearch(resetOffset = true, opts = {}) {
 
     renderGridRows();
     updateBulkUI();
+    loadCalendar();
     const actual = state.items.find((it) => it.id === state.selectedDocId);
     if (state.items.length > 0 && !actual) {
       // Si el documento sale de los resultados (p. ej. al etiquetarlo con un filtro activo), pasar al siguiente
@@ -410,6 +421,7 @@ async function selectDocument(docId, scrollIntoView = true) {
     btnApp.title = state.remoto
       ? `Descargar y abrir con ${esExcel(doc) ? "Excel" : "Word"}`
       : `Abrir con ${esExcel(doc) ? "Excel" : "Word"} (o el programa predeterminado de Windows)`;
+    updateOcrButton();
     updatePreviewPane();
   } catch (err) {
     console.error("Error cargando el documento:", err);
@@ -456,9 +468,11 @@ function updatePreviewPane() {
       <div class="meta-item"><strong>Archivo</strong>${escapeHtml(doc.nombre)}</div>
       <div class="meta-item"><strong>Modificado</strong>${formatDateFromEpoch(doc.mtime)}</div>
       <div class="meta-item"><strong>${esExcel(doc) ? "Hojas" : "Páginas"} / tamaño</strong>${doc.num_paginas} · ${fmtSize(doc.size)}</div>
-      <div class="meta-item"><strong>Texto</strong>${doc.necesita_ocr ? "<span class='ocr-badge'>Escaneado sin capa de texto</span>" : "Sí"}</div>
+      <div class="meta-item"><strong>Texto</strong>${textoEstado(doc)}</div>
       <div class="meta-item" style="grid-column: 1 / -1;"><strong>Ruta</strong>${escapeHtml(doc.ruta_display)}</div>`;
-    const txt = doc.texto || (doc.necesita_ocr ? "(Documento escaneado sin capa de texto: pendiente de OCR)"
+    const txt = doc.texto || (doc.necesita_ocr
+      ? doc.ocr === 2 ? "(Documento escaneado: el OCR no ha reconocido texto; puede ser manuscrito o una imagen)"
+        : "(Documento escaneado sin capa de texto: pendiente de OCR)"
       : !pdf ? "(El documento no contiene texto: puede que solo tenga imágenes)" : "");
     document.getElementById("extractedTextBox").innerHTML = highlightText(txt, state.terms);
   }
@@ -483,6 +497,14 @@ function applyZoom() {
 function updateIndexProgress(estado) {
   const wrap = document.getElementById("indexProgress");
   if (!estado) return;
+  const o = estado.ocr;
+  if (!estado.activo && o && o.activo && o.total) {
+    // Sin sincronización en marcha: se muestra el avance del OCR de los escaneados
+    wrap.classList.add("visible");
+    document.getElementById("indexProgressText").textContent = `${o.fuente}: OCR ${fmtNum(o.hechos)}/${fmtNum(o.total)} escaneados…`;
+    document.getElementById("indexProgressBar").style.width = `${Math.round((100 * o.hechos) / o.total)}%`;
+    return;
+  }
   if (estado.activo) {
     wrap.classList.add("visible");
     document.getElementById("indexProgressText").textContent = estado.mensaje || "Indexando…";
@@ -498,6 +520,7 @@ async function pollStatus() {
     const estado = await (await fetch("/api/status")).json();
     if (estado.activa && state.fuente && estado.activa !== state.fuente && !state.renaming) return loadInfo();
     updateIndexProgress(estado);
+    seguirOcr(estado.ocr);
     if (state.wasIndexing && !estado.activo && !state.renaming) {
       const u = estado.ultimo || {};
       if (u.status === "ok" && (u.added || u.updated || u.removed || u.duplicados)) {
@@ -775,6 +798,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     state.filtroEt.clear();
     state.filtroEtx.clear();
     state.sinEt = false;
+    state.fecha = "";
     renderTagFilters();
     runSearch(true);
     document.getElementById("qTodas").focus();
@@ -1083,6 +1107,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   } catch (e) {}
   document.body.dataset.vista = "busqueda";
   document.querySelector('#mobileNav button[data-vista="busqueda"]').classList.add("active");
+
+  initCalendarUI();
+  document.getElementById("btnOcr").addEventListener("click", () => ocrDocumento());
 
   await loadInfo();
   await loadEtiquetas();
@@ -1936,5 +1963,183 @@ function initDupsUI() {
     if (e.target.closest("a")) return; // abrir el PDF
     dups.keep.set(g.principal, parseInt(fila.dataset.id, 10));
     renderDups();
+  });
+}
+
+// ============================================================================
+// OCR DE LOS ESCANEADOS (OCR de Windows: en segundo plano y, uno a uno, con el botón)
+// ============================================================================
+
+function textoEstado(doc) {
+  if (doc.ocr === 1) return "Sí <span class='ocr-done' title='Texto reconocido por OCR: puede contener errores'>reconocido por OCR</span>";
+  if (!doc.necesita_ocr) return "Sí";
+  return doc.ocr === 2
+    ? "<span class='ocr-badge'>Escaneado: el OCR no ha reconocido texto</span>"
+    : "<span class='ocr-badge'>Escaneado sin capa de texto (pendiente de OCR)</span>";
+}
+
+function updateOcrButton() {
+  const btn = document.getElementById("btnOcr");
+  const doc = state.selectedDoc;
+  const ver = !!doc && esPdf(doc) && !state.remoto && state.ocrDisponible && (doc.necesita_ocr || doc.ocr === 1);
+  btn.style.display = ver ? "" : "none";
+  if (!ver) return;
+  btn.disabled = state.ocrEnCurso;
+  btn.querySelector("span").textContent = state.ocrEnCurso ? "Reconociendo…" : doc.ocr ? "Repetir OCR" : "OCR";
+  btn.title = doc.ocr === 1
+    ? "Volver a reconocer el texto del documento (OCR de Windows)"
+    : "Reconocer ahora el texto del documento escaneado (OCR de Windows)";
+}
+
+async function ocrDocumento() {
+  const doc = state.selectedDoc;
+  if (!doc || state.ocrEnCurso) return;
+  state.ocrEnCurso = true;
+  updateOcrButton();
+  showToast(`Reconociendo el texto de «${doc.nombre}»… (unos segundos por página)`, 5000);
+  try {
+    const data = await apiPost(`/api/doc/${doc.id}/ocr`, {});
+    if (data.doc && state.selectedDocId === doc.id) {
+      state.selectedDoc = data.doc;
+      updatePreviewPane();
+    }
+    showToast(data.con_texto
+      ? `Texto reconocido: ${fmtNum(data.caracteres)} caracteres. Ya se puede buscar por su contenido.`
+      : "El OCR no ha reconocido texto (¿manuscrito o solo imagen?).", 5000);
+    await loadInfo();
+    await runSearch(false, { keepPreview: true });
+  } catch (err) {
+    showToast(`No se ha podido hacer el OCR: ${err.message}`, 6000);
+  } finally {
+    state.ocrEnCurso = false;
+    updateOcrButton();
+  }
+}
+
+// Mientras el OCR en segundo plano avanza, se actualizan de vez en cuando el recuento de escaneados
+// y los resultados (los documentos reconocidos pierden la marca «OCR»)
+function seguirOcr(o) {
+  if (!o) return;
+  if (o.activo && o.hechos - state.ocrHechos >= 25) {
+    state.ocrHechos = o.hechos;
+    loadInfo();
+  }
+  if (state.ocrActivo && !o.activo && !state.renaming) {
+    state.ocrHechos = 0;
+    loadInfo();
+    runSearch(false, { keepPreview: true });
+  }
+  state.ocrActivo = !!o.activo;
+}
+
+// ============================================================================
+// CALENDARIO (fecha de modificación del archivo, la única fecha que se muestra)
+// ============================================================================
+
+const MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const DIAS_SEMANA = ["L", "M", "X", "J", "V", "S", "D"];
+const cal = { datos: null, peticion: 0 };
+
+function mesDe(fecha) {
+  return fecha.slice(0, 7);
+}
+
+function mesActual() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function sumarMeses(mes, n) {
+  const [y, m] = mes.split("-").map(Number);
+  const d = new Date(y, m - 1 + n, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function nombreMes(mes) {
+  const [y, m] = mes.split("-").map(Number);
+  return `${MESES[m - 1]} ${y}`;
+}
+
+function textoFecha(f) {
+  if (f.length === 7) return `todo ${nombreMes(f)}`;
+  const [y, m, d] = f.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+async function loadCalendar() {
+  if (!state.calMes) state.calMes = state.fecha ? mesDe(state.fecha) : mesActual();
+  const n = ++cal.peticion;
+  const p = new URLSearchParams(searchParamsObject());
+  p.delete("fecha");
+  p.set("mes", state.calMes);
+  try {
+    const data = await (await fetch(`/api/calendario?${p.toString()}`)).json();
+    if (n !== cal.peticion || data.error) return;
+    cal.datos = data;
+    renderCalendar();
+  } catch (e) {
+    /* servidor no disponible momentáneamente */
+  }
+}
+
+function renderCalendar() {
+  const datos = cal.datos || { dias: {}, total: 0 };
+  const mes = state.calMes;
+  const [y, m] = mes.split("-").map(Number);
+  const mesBtn = document.getElementById("btnCalMes");
+  mesBtn.textContent = `${nombreMes(mes)} · ${fmtNum(datos.total)}`;
+  mesBtn.classList.toggle("sel", state.fecha === mes);
+  mesBtn.disabled = !datos.total && state.fecha !== mes;
+
+  const max = Math.max(1, ...Object.values(datos.dias));
+  const hoy = new Date();
+  const esHoy = (d) => hoy.getFullYear() === y && hoy.getMonth() + 1 === m && hoy.getDate() === d;
+  const hueco = (new Date(y, m - 1, 1).getDay() + 6) % 7; // lunes = 0
+  const nDias = new Date(y, m, 0).getDate();
+  let html = DIAS_SEMANA.map((d) => `<span class="cal-dow">${d}</span>`).join("");
+  html += "<span></span>".repeat(hueco);
+  for (let d = 1; d <= nDias; d++) {
+    const n = datos.dias[String(d)] || 0;
+    const f = `${mes}-${String(d).padStart(2, "0")}`;
+    const nivel = n ? Math.min(4, 1 + Math.floor((3 * n) / max)) : 0;
+    const cls = ["cal-dia", n ? `n${nivel}` : "vacio", state.fecha === f ? "sel" : "", esHoy(d) ? "hoy" : ""].join(" ");
+    const tit = n ? `${textoFecha(f)}: ${fmtNum(n)} ${n === 1 ? "documento" : "documentos"}` : `${textoFecha(f)}: sin documentos`;
+    html += `<button type="button" class="${cls}" data-fecha="${f}" title="${tit}" ${n || state.fecha === f ? "" : "disabled"}>${d}</button>`;
+  }
+  document.getElementById("calGrid").innerHTML = html;
+
+  const filtro = document.getElementById("calFiltro");
+  filtro.style.display = state.fecha ? "" : "none";
+  if (state.fecha) document.getElementById("calFiltroText").textContent = `Solo ${textoFecha(state.fecha)}`;
+  document.getElementById("calSection").classList.toggle("activo", !!state.fecha);
+  document.getElementById("btnCalNext").disabled = !!datos.ultimo && mes >= datos.ultimo;
+  document.getElementById("btnCalPrev").disabled = !!datos.primero && mes <= datos.primero;
+}
+
+function elegirFecha(f) {
+  state.fecha = state.fecha === f ? "" : f; // otro clic en lo mismo lo quita
+  runSearch(true);
+  if (state.fecha && esMovil()) setVista("resultados");
+}
+
+function irAMes(mes) {
+  state.calMes = mes;
+  loadCalendar();
+}
+
+function initCalendarUI() {
+  document.getElementById("calGrid").addEventListener("click", (e) => {
+    const b = e.target.closest(".cal-dia");
+    if (b && !b.disabled) elegirFecha(b.dataset.fecha);
+  });
+  document.getElementById("btnCalMes").addEventListener("click", () => elegirFecha(state.calMes));
+  document.getElementById("btnCalPrev").addEventListener("click", () => irAMes(sumarMeses(state.calMes, -1)));
+  document.getElementById("btnCalNext").addEventListener("click", () => irAMes(sumarMeses(state.calMes, 1)));
+  document.getElementById("btnCalPrevYear").addEventListener("click", () => irAMes(sumarMeses(state.calMes, -12)));
+  document.getElementById("btnCalNextYear").addEventListener("click", () => irAMes(sumarMeses(state.calMes, 12)));
+  document.getElementById("btnCalHoy").addEventListener("click", () => irAMes(mesActual()));
+  document.getElementById("btnCalQuitar").addEventListener("click", () => {
+    state.fecha = "";
+    runSearch(true);
   });
 }

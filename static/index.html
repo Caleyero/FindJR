@@ -56,6 +56,10 @@
       <rect width="20" height="14" x="2" y="5" rx="2"/>
       <line x1="2" x2="22" y1="10" y2="10"/>
     </symbol>
+    <symbol id="ico-scan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
+      <line x1="7" y1="9" x2="17" y2="9"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="7" y1="15" x2="13" y2="15"/>
+    </symbol>
     <symbol id="ico-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <rect width="18" height="18" x="3" y="4" rx="2"/>
       <line x1="16" x2="16" y1="2" y2="6"/>
@@ -156,19 +160,19 @@
         <div class="bar"><span id="indexProgressBar"></span></div>
       </div>
       <button class="btn btn-secondary btn-dups solo-local" id="btnDuplicados" style="display: none;" title="Archivos idénticos byte a byte: solo se indexa uno de cada grupo. Revísalos y elimina las copias que sobren">
-        <svg class="icon"><use href="#ico-copy"></use></svg> Duplicados <span class="dups-count" id="dupsCount">0</span>
+        <svg class="icon"><use href="#ico-copy"></use></svg> <span class="btn-label">Duplicados</span> <span class="dups-count" id="dupsCount">0</span>
       </button>
       <button class="btn btn-secondary" id="btnSync" title="Buscar documentos nuevos o modificados en la Biblioteca">
-        <svg class="icon"><use href="#ico-refresh"></use></svg> Sincronizar
+        <svg class="icon"><use href="#ico-refresh"></use></svg> <span class="btn-label">Sincronizar</span>
       </button>
       <button class="btn btn-secondary" id="btnExportCsv" title="Exportar la lista de resultados a Excel (CSV)">
-        <svg class="icon"><use href="#ico-table"></use></svg> Exportar Excel
+        <svg class="icon"><use href="#ico-table"></use></svg> <span class="btn-label">Exportar Excel</span>
       </button>
       <button class="btn btn-primary" id="btnExportPdfBundle" title="Generar un único PDF con los documentos encontrados (máx. 300)">
-        <svg class="icon"><use href="#ico-layers"></use></svg> Unir resultados en 1 PDF
+        <svg class="icon"><use href="#ico-layers"></use></svg> <span class="btn-label">Unir resultados en 1 PDF</span>
       </button>
-      <button class="btn btn-outline solo-local" id="btnOpenPrefs" title="Fuentes de documentos, carpetas y exclusiones">
-        <svg class="icon"><use href="#ico-settings"></use></svg> Preferencias
+      <button class="btn btn-outline solo-local" id="btnOpenPrefs" title="Preferencias: fuentes de documentos, carpetas y exclusiones">
+        <svg class="icon"><use href="#ico-settings"></use></svg> <span class="btn-label">Preferencias</span>
       </button>
     </div>
   </header>
@@ -241,6 +245,27 @@
           </small>
         </div>
 
+        <!-- CALENDARIO: documentos por fecha de modificación (la única fecha que se muestra) -->
+        <div class="cal-section" id="calSection">
+          <div class="tags-header">
+            <label><svg class="icon icon-label"><use href="#ico-calendar"></use></svg> Fecha de modificación</label>
+            <button type="button" class="btn-link" id="btnCalHoy" title="Ir al mes actual">Hoy</button>
+          </div>
+          <div class="cal-nav">
+            <button type="button" class="cal-btn" id="btnCalPrevYear" title="Año anterior">&laquo;</button>
+            <button type="button" class="cal-btn" id="btnCalPrev" title="Mes anterior">&lsaquo;</button>
+            <button type="button" class="cal-mes" id="btnCalMes" title="Ver todo el mes"></button>
+            <button type="button" class="cal-btn" id="btnCalNext" title="Mes siguiente">&rsaquo;</button>
+            <button type="button" class="cal-btn" id="btnCalNextYear" title="Año siguiente">&raquo;</button>
+          </div>
+          <div class="cal-grid" id="calGrid"></div>
+          <div class="cal-filtro" id="calFiltro" style="display: none;">
+            <span id="calFiltroText"></span>
+            <button type="button" class="btn-link" id="btnCalQuitar" title="Quitar el filtro de fecha">Quitar</button>
+          </div>
+          <small class="filter-hint">Clic en un día (o en el mes): solo los documentos de esa fecha. Cuenta los que cumplen la búsqueda.</small>
+        </div>
+
         <div class="search-help">
           <strong>Cómo busca</strong>
           <ul>
@@ -249,7 +274,7 @@
             <li>Las palabras se buscan por su comienzo: <code>arrend</code> encuentra <i>arrendamiento</i>, <i>arrendador</i>…</li>
             <li>Las cifras se encuentran con o sin punto de miles: <code>1224,00</code> = <code>1.224,00</code>.</li>
             <li>Separadores indiferentes: <code>B-85890895</code> = <code>B85890895</code>.</li>
-            <li>Los documentos escaneados sin texto (marcados <span class="ocr-badge">OCR</span>) solo se encuentran por nombre y carpeta.</li>
+            <li>Los escaneados se pasan por OCR en segundo plano. Mientras no tengan texto (marcados <span class="ocr-badge">OCR</span>) solo se encuentran por nombre y carpeta.</li>
           </ul>
         </div>
       </div>
@@ -351,6 +376,9 @@
             </a>
             <button class="btn btn-sm btn-outline" id="btnOpenApp" style="display: none;" title="Abrir con el programa predeterminado de Windows">
               <svg class="icon"><use href="#ico-external-link"></use></svg> Abrir
+            </button>
+            <button class="btn btn-sm btn-outline solo-local" id="btnOcr" style="display: none;" title="Reconocer el texto del documento escaneado (OCR de Windows)">
+              <svg class="icon"><use href="#ico-scan"></use></svg> <span>OCR</span>
             </button>
             <button class="btn btn-sm btn-outline solo-local" id="btnRename" title="Renombrar el archivo (F2 o doble clic en el nombre)" aria-label="Renombrar">
               <svg class="icon"><use href="#ico-pencil"></use></svg>

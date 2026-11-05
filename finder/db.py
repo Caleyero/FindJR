@@ -16,7 +16,7 @@ from typing import Optional
 from . import config, etiquetas
 from .config import ensure_data_dir
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS archivos (
     error         TEXT,
     indexado_en   TEXT,
     hash          TEXT,                     -- SHA-256; solo si otro archivo tiene el mismo tamaño
-    copia_de      INTEGER REFERENCES archivos(id) ON DELETE SET NULL  -- id de la copia principal
+    copia_de      INTEGER REFERENCES archivos(id) ON DELETE SET NULL,  -- id de la copia principal
+    ocr           INTEGER                   -- NULL no intentado · 1 texto por OCR · 2 sin resultado (finder/ocr.py)
 );
 
 CREATE TABLE IF NOT EXISTS documentos (
@@ -169,6 +170,13 @@ def _asegurar_v3(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_arch_copia ON archivos(copia_de) WHERE copia_de IS NOT NULL;")
 
 
+def _asegurar_v4(conn: sqlite3.Connection) -> None:
+    """v3 -> v4: columna `ocr` (resultado del OCR de los escaneados). Idempotente, sin reindexar."""
+    if "ocr" not in {r[1] for r in conn.execute("PRAGMA table_info(archivos)")}:
+        with conn:
+            conn.execute("ALTER TABLE archivos ADD COLUMN ocr INTEGER;")
+
+
 def init_db(fid: Optional[str] = None) -> None:
     fid = fid or config.fuente_activa_id()
     with _INIT_LOCK:
@@ -181,7 +189,7 @@ def _init_db(fid: str) -> None:
     ver = conn.execute("PRAGMA user_version;").fetchone()[0]
     if ver == 1:
         _migrate_v1(conn)
-    elif ver not in (0, 2, SCHEMA_VERSION):
+    elif ver not in (0, 2, 3, SCHEMA_VERSION):
         with conn:
             _drop_fts(conn)
             for t in ("documentos", "archivos", "meta") + _TABLAS_V1:
@@ -189,6 +197,7 @@ def _init_db(fid: str) -> None:
     with conn:
         conn.executescript(_SCHEMA)
     _asegurar_v3(conn)
+    _asegurar_v4(conn)
     with conn:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
     etiquetas.init_schema(conn)

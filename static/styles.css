@@ -820,6 +820,7 @@ mark.hl {
 
 .preview-toolbar {
   display: flex;
+  flex-wrap: wrap; /* con el panel estrecho, los botones bajan de línea en vez de salirse */
   align-items: center;
   justify-content: space-between;
   margin-top: 8px;
@@ -873,6 +874,7 @@ mark.hl {
 
 .preview-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 5px;
 }
 
@@ -2068,6 +2070,157 @@ textarea {
 /* ============================================================================
    ACCESO DESDE INTERNET: lo que solo se puede hacer en el PC no aparece
    ============================================================================ */
+/* ============================================================================
+   BARRA SUPERIOR EN VENTANAS MEDIANAS: los botones se quedan solo con el icono (el título lo explica)
+   para que no se salgan por la derecha (antes desaparecía «Preferencias»)
+   ============================================================================ */
+.topbar-brand {
+  min-width: 0;
+}
+.topbar-brand > div:nth-child(2) {
+  min-width: 0;
+}
+.brand-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topbar-actions {
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+@media (min-width: 761px) and (max-width: 1500px) {
+  .topbar-actions .btn-label {
+    display: none;
+  }
+  .topbar-actions .btn {
+    padding: 7px 9px;
+  }
+}
+
+/* ============================================================================
+   CALENDARIO (fecha de modificación)
+   ============================================================================ */
+.cal-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  margin-top: 12px;
+  border-top: 1px solid var(--border-color);
+}
+.cal-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.cal-btn,
+.cal-mes {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-main);
+  font-family: var(--font);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cal-btn {
+  width: 26px;
+  height: 26px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-muted);
+}
+.cal-mes {
+  flex: 1;
+  height: 26px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+.cal-btn:hover:not(:disabled),
+.cal-mes:hover:not(:disabled) {
+  background: var(--primary-light);
+  color: var(--primary);
+}
+.cal-btn:disabled,
+.cal-mes:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.cal-mes.sel {
+  background: var(--primary);
+  color: #fff;
+}
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.cal-dow {
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  padding: 2px 0;
+}
+.cal-dia {
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-family: var(--font);
+  font-size: 11.5px;
+  cursor: pointer;
+  color: var(--text-main);
+  background: transparent;
+  padding: 0;
+}
+.cal-dia.vacio {
+  color: #cbd5e1;
+  cursor: default;
+}
+/* Intensidad según el número de documentos del día */
+.cal-dia.n1 { background: #dbeafe; }
+.cal-dia.n2 { background: #bfdbfe; }
+.cal-dia.n3 { background: #93c5fd; font-weight: 700; }
+.cal-dia.n4 { background: #60a5fa; color: #fff; font-weight: 700; }
+.cal-dia:hover:not(:disabled) {
+  border-color: var(--primary);
+}
+.cal-dia.hoy {
+  border-color: #94a3b8;
+}
+.cal-dia.sel {
+  background: #1e3a8a;
+  border-color: #1e3a8a;
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 0 0 2px #fff, 0 0 0 3px #1e3a8a;
+}
+.cal-filtro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary);
+  background: var(--primary-light);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+/* Texto obtenido por OCR */
+.ocr-done {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #15803d;
+  background: var(--success-bg);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+
 body.remoto .solo-local,
 body.remoto .prev-copias {
   display: none !important;
