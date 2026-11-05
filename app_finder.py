@@ -11,6 +11,7 @@ Sin frameworks: ThreadingHTTPServer + PyMuPDF + SQLite FTS5.
 
 import csv
 import datetime
+import html
 import io
 import json
 import mimetypes
@@ -35,7 +36,7 @@ if sys.stderr is None:
 
 import fitz  # PyMuPDF
 
-from finder import config, duplicados, etiquetas, indexador
+from finder import config, duplicados, etiquetas, indexador, remoto
 from finder.config import BASE_DIR, fuente, load_config, save_config, to_display_path
 from finder.db import borrar_indice, get_conn, init_db, meta_get, meta_set
 from finder.extraccion import SEPARADOR_PAGINA, es_pdf
@@ -509,6 +510,7 @@ def content_disposition(filename: str, inline: bool) -> str:
 class FinderHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
     daemon_threads = True
+    remoto = False  # True en el listener de acceso desde Internet (finder/remoto.py)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -518,6 +520,34 @@ class Handler(BaseHTTPRequestHandler):
                 sys.stderr.write(f"[FinderJR] {self.command} {self.path}\n")
             except Exception:  # noqa: BLE001
                 pass
+
+    def end_headers(self) -> None:
+        if self.server.remoto:
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "same-origin")
+        super().end_headers()
+
+    def _autorizar(self, route: str) -> bool:
+        """Listener remoto: exige el token de Cloudflare Access y limita lo que se puede hacer."""
+        if not self.server.remoto:
+            return True
+        try:
+            remoto.VERIFICADOR.verificar(self.headers.get("Cf-Access-Jwt-Assertion"), remoto.config_remoto())
+            if not remoto.ruta_permitida(self.command, route):
+                raise remoto.AccesoDenegado("No disponible desde fuera: hazlo en el PC")
+        except remoto.AccesoDenegado as e:
+            if route.startswith("/api/"):
+                self.send_json({"error": str(e)}, status=e.status)
+            else:
+                body = (f"<!doctype html><meta charset=utf-8><title>FinderJR</title>"
+                        f"<p style='font:16px sans-serif;margin:2em'>FinderJR: {html.escape(str(e))}</p>").encode("utf-8")
+                self.send_response(e.status)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            return False
+        return True
 
     def send_json(self, data: Any, status: int = 200) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -556,8 +586,10 @@ class Handler(BaseHTTPRequestHandler):
         qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         params = {k: v[0] for k, v in qs.items()}
         try:
+            if not self._autorizar(route):
+                return
             if route == "/api/info":
-                return self.send_json(query_info())
+                return self.send_json({**query_info(), "remoto": self.server.remoto})
             if route == "/api/search":
                 return self.send_json(query_documents(params))
             if route == "/api/status":
@@ -652,6 +684,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001
             payload = {}
         try:
+            if not self._autorizar(route):
+                return
             if route == "/api/heartbeat":
                 cid = str(payload.get("client_id") or "default")
                 now = time.monotonic()
@@ -815,6 +849,27 @@ def lifecycle_watchdog(server: FinderHTTPServer) -> None:
             break
 
 
+def servir_remoto(puerto: int, stop: threading.Event) -> None:
+    """Listener de acceso desde Internet. Con la red «mirrored» de WSL el puerto puede quedar reservado
+    unos instantes (conexiones del relé en curso al reiniciar), así que se reintenta hasta conseguirlo."""
+    aviso = False
+    while not stop.is_set():
+        try:
+            srv = FinderHTTPServer(("127.0.0.1", puerto), Handler)
+        except OSError as e:
+            if not aviso:
+                sys.stderr.write(f"[FinderJR] Puerto remoto {puerto} ocupado ({e}); se reintenta cada 5 s\n")
+                aviso = True
+            stop.wait(5)
+            continue
+        srv.remoto = True
+        try:
+            srv.serve_forever()
+        finally:
+            srv.server_close()
+        return
+
+
 def main() -> None:
     global SERVER_READY_AT
     port = int(os.environ.get("FINDERJR_PORT", DEFAULT_PORT))
@@ -829,6 +884,13 @@ def main() -> None:
     SERVER_READY_AT = time.monotonic()
 
     stop = threading.Event()
+
+    # Acceso desde Internet: segundo listener, también solo en 127.0.0.1 (lo publica el relé del túnel)
+    cfg_remoto = load_config().get("remoto") or {}
+    if cfg_remoto.get("activo"):
+        threading.Thread(target=servir_remoto, args=(int(cfg_remoto.get("puerto") or 8767), stop),
+                         daemon=True, name="finder-remoto").start()
+
     threading.Thread(target=indexador.background_loop, args=(stop,), daemon=True, name="finder-bg").start()
     if "--no-auto-shutdown" not in sys.argv:
         threading.Thread(target=lifecycle_watchdog, args=(server,), daemon=True).start()

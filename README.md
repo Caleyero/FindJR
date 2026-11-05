@@ -93,6 +93,20 @@ mismo texto **no** son duplicados.
   todos a la vez. Justo antes de borrar se vuelve a comprobar que siguen siendo idénticos. Las etiquetas
   de lo eliminado pasan a lo que se conserva.
 
+## Acceso desde Internet (móvil)
+
+En el PC de casa FinderJR se publica en **https://oraculo.noobe.org** (sustituye a Oráculo) a través del
+túnel de Cloudflare de `Aplicaciones\Webserver`, protegido con Cloudflare Access (código al correo).
+
+- Desde fuera se puede buscar, ver, descargar, exportar y poner o quitar etiquetas. Renombrar, enviar a la
+  Papelera, revisar duplicados y cambiar fuentes o preferencias solo se hace en el PC.
+- En el móvil la pantalla muestra un panel cada vez: **Búsqueda**, **Resultados** y **Documento**.
+- Configuración (`finder_config.json`, solo en ese PC):
+  `"remoto": {"activo": true, "puerto": 8767, "cf_team": "<equipo>.cloudflareaccess.com", "cf_aud": "<AUD de la aplicación de Access>", "emails": ["<tu correo>"]}`.
+  Después, reiniciar FinderJR (menú, opción 13). Debe estar en segundo plano permanente.
+- Piezas fuera de FinderJR: relé `Webserver\apps\finderjr-relay.yml` (Docker) y el proxy host de
+  `oraculo.noobe.org` en Nginx Proxy Manager apuntando a `http://172.18.0.1:8768`.
+
 ## Arquitectura
 
 ```

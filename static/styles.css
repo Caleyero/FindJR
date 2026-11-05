@@ -2064,3 +2064,207 @@ textarea {
   height: 13px;
   margin-top: 1px;
 }
+
+/* ============================================================================
+   ACCESO DESDE INTERNET: lo que solo se puede hacer en el PC no aparece
+   ============================================================================ */
+body.remoto .solo-local,
+body.remoto .prev-copias {
+  display: none !important;
+}
+
+/* ============================================================================
+   MÓVIL: un panel cada vez (body[data-vista] = busqueda | resultados | documento)
+   ============================================================================ */
+.mobile-nav,
+.folder-path-movil {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  body {
+    height: 100dvh;
+    font-size: 14px;
+  }
+
+  /* Cabecera compacta: marca + fuente; acciones en una fila desplazable */
+  .topbar {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 10px;
+  }
+  .topbar-brand {
+    gap: 8px;
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+  .brand-logo {
+    width: 30px;
+    height: 30px;
+  }
+  .topbar-brand > div:nth-child(2) {
+    min-width: 0;
+  }
+  .brand-title {
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+  }
+  .brand-subtitle {
+    display: none;
+  }
+  .fuente-switch {
+    margin-left: auto;
+  }
+  .topbar-actions {
+    flex: 1 1 100%;
+    overflow-x: auto;
+    gap: 6px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .topbar-actions::-webkit-scrollbar {
+    display: none;
+  }
+  .topbar-actions .btn {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .index-progress .bar {
+    display: none;
+  }
+
+  .mobile-nav {
+    display: flex;
+    flex-shrink: 0;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border-color);
+  }
+  .mobile-nav button {
+    flex: 1;
+    border: none;
+    background: none;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-muted);
+    padding: 11px 4px 9px;
+    border-bottom: 3px solid transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+  }
+  .mobile-nav button.active {
+    color: var(--text-main);
+    border-bottom-color: var(--fuente);
+  }
+  .mobile-nav-count {
+    background: var(--primary-light);
+    color: var(--primary);
+    border-radius: 99px;
+    padding: 0 7px;
+    font-size: 12px;
+  }
+
+  /* Un solo panel a pantalla completa */
+  .workspace {
+    display: flex;
+    flex-direction: column;
+    padding: 6px;
+    min-height: 0;
+  }
+  .panel-resizer {
+    display: none !important;
+  }
+  .filters-panel,
+  .grid-panel,
+  .preview-panel {
+    display: none;
+    flex: 1;
+    min-height: 0;
+  }
+  body[data-vista="busqueda"] .filters-panel,
+  body[data-vista="resultados"] .grid-panel,
+  body[data-vista="documento"] .preview-panel {
+    display: flex;
+  }
+  .filters-panel {
+    overflow-y: auto;
+  }
+
+  /* Campos a 16 px: iOS no hace zoom al escribir */
+  input[type="text"],
+  input[type="number"],
+  select {
+    font-size: 16px !important;
+  }
+
+  /* Resultados como lista: sin casilla ni columna de carpeta (va debajo del nombre) */
+  .results-table .col-check,
+  .results-table .cell-check,
+  .results-table .col-origen,
+  .results-table td:last-child {
+    display: none;
+  }
+  .results-table .col-fecha {
+    width: 78px !important;
+  }
+  .results-table td {
+    padding-top: 9px;
+    padding-bottom: 9px;
+  }
+  .results-table .doc-name {
+    font-size: 13.5px;
+    word-break: break-word;
+  }
+  .folder-path-movil {
+    display: block;
+    font-size: 11.5px;
+    color: var(--text-muted);
+    word-break: break-word;
+    margin-top: 2px;
+  }
+  .results-table .snippet-match {
+    font-size: 12px;
+    line-height: 1.35;
+  }
+  .kpi-group-sort {
+    margin-left: 0;
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .kpi-group-sort select {
+    flex: 1;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  /* Documento: título completo, barra de herramientas en varias líneas */
+  .preview-title-block h3 {
+    font-size: 14px;
+    word-break: break-word;
+  }
+  .preview-toolbar {
+    flex-wrap: wrap;
+  }
+  .preview-actions {
+    flex-wrap: wrap;
+  }
+  .view-tabs .tab-btn[data-tab="pdf"] {
+    display: none; /* el visor de PDF incrustado no funciona en el navegador del móvil */
+  }
+  .preview-body {
+    min-height: 60vh;
+  }
+  .image-scroll-wrap {
+    padding: 6px;
+  }
+  .btn,
+  .tab-btn {
+    min-height: 34px;
+  }
+}

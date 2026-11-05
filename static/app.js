@@ -36,7 +36,30 @@ const state = {
   fuente: null, // id de la fuente con la que trabaja esta pestaña
   fuentes: [],
   folderConfigurada: true,
+  remoto: false, // acceso desde Internet: solo consultar y etiquetar (el servidor lo impone igualmente)
 };
+
+// ============================================================================
+// MÓVIL: con pantalla estrecha se ve un panel cada vez (Búsqueda | Resultados | Documento)
+// ============================================================================
+const MOVIL = window.matchMedia("(max-width: 760px)");
+
+function esMovil() {
+  return MOVIL.matches;
+}
+
+function setVista(vista, historial = true) {
+  if (document.body.dataset.vista === vista) return;
+  document.body.dataset.vista = vista;
+  document.querySelectorAll("#mobileNav button").forEach((b) => b.classList.toggle("active", b.dataset.vista === vista));
+  // El botón «atrás» del móvil vuelve al panel anterior
+  if (historial && esMovil()) {
+    try {
+      history.pushState({ vista }, "");
+    } catch (e) {}
+  }
+  if (esMovil()) window.scrollTo(0, 0);
+}
 
 let searchDebounceTimer = null;
 
@@ -194,6 +217,8 @@ async function loadInfo() {
   try {
     const data = await (await fetch("/api/info")).json();
     if (await aplicarFuente(data)) return; // ha cambiado en otra pestaña: ya se ha recargado todo
+    state.remoto = !!data.remoto;
+    document.body.classList.toggle("remoto", state.remoto);
     const st = data.stats || {};
     document.getElementById("folderStatusText").textContent = !data.folder_configurada
       ? "Sin carpeta configurada: indícala en Preferencias"
@@ -248,12 +273,16 @@ async function runSearch(resetOffset = true, opts = {}) {
     }
   } catch (err) {
     console.error("Error en búsqueda:", err);
-    tbody.innerHTML = `<tr><td colspan="4" class="empty-cell">Error en la búsqueda: ${escapeHtml(err.message)}</td></tr>`;
+    const msg = state.remoto && err instanceof TypeError
+      ? "Se ha perdido la conexión o ha caducado la sesión. Recarga la página."
+      : `Error en la búsqueda: ${escapeHtml(err.message)}`;
+    tbody.innerHTML = `<tr><td colspan="4" class="empty-cell">${msg}</td></tr>`;
   }
 }
 
 function updateCounters() {
   document.getElementById("kpiTotalDocs").textContent = fmtNum(state.total_count);
+  document.getElementById("mobileNavCount").textContent = fmtNum(state.total_count);
   const fromIdx = state.total_count === 0 ? 0 : state.offset + 1;
   const toIdx = Math.min(state.offset + state.items.length, state.total_count);
   document.getElementById("paginationInfo").textContent = `Mostrando ${fmtNum(fromIdx)}-${fmtNum(toIdx)} de ${fmtNum(state.total_count)} documentos`;
@@ -306,7 +335,8 @@ function renderGridRows() {
             <span class="date-sub">${pags}</span>${tipoBadge(it)}${ocr}${copias}
           </td>
           <td>
-            <div class="doc-name" title="Doble clic para cambiar el nombre">${highlightText(it.nombre, terms)}</div>
+            <div class="doc-name" title="${state.remoto ? "" : "Doble clic para cambiar el nombre"}">${highlightText(it.nombre, terms)}</div>
+            <div class="folder-path-movil">${highlightText(dir === it.ruta_rel ? "(raíz)" : dir, terms)}</div>
             ${tagPillsHtml(it.etiquetas)}
             ${copiaMatch}
             ${hasSearch() ? snippet : ""}
@@ -330,6 +360,7 @@ function renderGridRows() {
       if (e.ctrlKey || e.metaKey) return toggleCheck(idx, !state.checked.has(id), false);
       if (e.shiftKey && state.lastCheckIdx !== null) return toggleCheck(idx, true, true);
       selectDocument(id, false);
+      if (esMovil()) setVista("documento");
     });
     tr.querySelector(".doc-name").addEventListener("dblclick", (e) => {
       e.preventDefault();
@@ -359,7 +390,7 @@ async function selectDocument(docId, scrollIntoView = true) {
 
     document.getElementById("prevCategoria").textContent = doc.carpeta;
     document.getElementById("prevTitle").textContent = doc.nombre;
-    document.getElementById("prevTitle").title = "Doble clic para cambiar el nombre";
+    document.getElementById("prevTitle").title = state.remoto ? doc.nombre : "Doble clic para cambiar el nombre";
     document.getElementById("prevSubtitle").textContent = [
       `Modificado ${formatDateFromEpoch(doc.mtime)}`,
       fmtPaginas(doc, false),
@@ -376,7 +407,9 @@ async function selectDocument(docId, scrollIntoView = true) {
     btnAbrir.style.display = pdf ? "" : "none";
     const btnApp = document.getElementById("btnOpenApp");
     btnApp.style.display = pdf ? "none" : "";
-    btnApp.title = `Abrir con ${esExcel(doc) ? "Excel" : "Word"} (o el programa predeterminado de Windows)`;
+    btnApp.title = state.remoto
+      ? `Descargar y abrir con ${esExcel(doc) ? "Excel" : "Word"}`
+      : `Abrir con ${esExcel(doc) ? "Excel" : "Word"} (o el programa predeterminado de Windows)`;
     updatePreviewPane();
   } catch (err) {
     console.error("Error cargando el documento:", err);
@@ -597,6 +630,7 @@ function prefsPintarFuentes() {
 }
 
 async function openPrefsModal(fid = null) {
+  if (state.remoto) return; // solo en el PC (el servidor también lo rechaza)
   try {
     const [cfgData, fData] = await Promise.all([(await fetch("/api/config")).json(), (await fetch("/api/fuentes")).json()]);
     document.getElementById("prefInterval").value = (cfgData.config || {}).sync_interval_min || 10;
@@ -678,7 +712,7 @@ function applyPanelLayout(layout, persist = false) {
   try {
     localStorage.setItem("finderjr_ui_layout", JSON.stringify(currentLayout));
   } catch (e) {}
-  if (persist) {
+  if (persist && !state.remoto) {
     fetch("/api/layout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(currentLayout) }).catch(() => {});
   }
 }
@@ -717,6 +751,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (e.key === "Enter") {
         clearTimeout(searchDebounceTimer);
         runSearch(true);
+        if (esMovil()) {
+          inp.blur();
+          setVista("resultados");
+        }
       }
     });
   });
@@ -819,6 +857,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   document.getElementById("btnOpenApp").addEventListener("click", async () => {
     if (!state.selectedDocId) return;
+    if (state.remoto) {
+      // Desde fuera no se puede abrir en el PC: se descarga y lo abre el propio dispositivo
+      window.location.href = `/api/doc/${state.selectedDocId}/pdf?download=1${fuenteQuery()}`;
+      return;
+    }
     const r = await fetch("/api/open_file", {
       method: "POST",
       headers: postHeaders(),
@@ -848,11 +891,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName) && document.activeElement.type !== "checkbox") return;
     if (deleteModalOpen() || dupsModalOpen()) return;
-    if (e.key === "Delete" && state.selectedDocId && !state.renaming) {
+    if (e.key === "Delete" && state.selectedDocId && !state.renaming && !state.remoto) {
       e.preventDefault();
       return openDeleteModal();
     }
-    if (e.key === "F2" && state.selectedDocId && !state.renaming) {
+    if (e.key === "F2" && state.selectedDocId && !state.renaming && !state.remoto) {
       e.preventDefault();
       const cell = document.querySelector(`#resultsTbody tr[data-id="${state.selectedDocId}"] .doc-name`);
       return startRename(state.selectedDocId, cell || document.getElementById("prevTitle"));
@@ -1032,11 +1075,20 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("prevTitle").addEventListener("dblclick", (e) => {
     if (state.selectedDocId && !e.target.closest(".rename-box")) startRename(state.selectedDocId, e.currentTarget);
   });
+  // Móvil: pestañas de paneles y botón «atrás» del navegador
+  document.querySelectorAll("#mobileNav button").forEach((b) => b.addEventListener("click", () => setVista(b.dataset.vista)));
+  window.addEventListener("popstate", (e) => setVista((e.state && e.state.vista) || "busqueda", false));
+  try {
+    history.replaceState({ vista: "busqueda" }, "");
+  } catch (e) {}
+  document.body.dataset.vista = "busqueda";
+  document.querySelector('#mobileNav button[data-vista="busqueda"]').classList.add("active");
+
   await loadInfo();
   await loadEtiquetas();
   await runSearch(true);
   pollStatus();
-  document.getElementById("qTodas").focus();
+  if (!esMovil()) document.getElementById("qTodas").focus();
 });
 
 // ============================================================================
@@ -1333,6 +1385,7 @@ async function createFromPopover() {
 // ---- Gestor (renombrar, color, tecla, borrar) ----
 
 function openTagsModal() {
+  if (state.remoto) return; // solo en el PC (el servidor también lo rechaza)
   renderTagsManage();
   document.getElementById("tagsModal").style.display = "flex";
 }
@@ -1457,6 +1510,7 @@ function splitName(nombre) {
 
 /** Sustituye el contenido de `host` por un campo de edición del nombre (sin extensión). */
 function startRename(docId, host) {
+  if (state.remoto) return; // solo en el PC (el servidor también lo rechaza)
   if (state.renaming || !host) return;
   const it = state.items.find((x) => x.id === docId);
   const nombre = (it && it.nombre) || (state.selectedDoc && state.selectedDoc.id === docId && state.selectedDoc.nombre);
@@ -1548,6 +1602,7 @@ function deleteModalOpen() {
 }
 
 function openDeleteModal() {
+  if (state.remoto) return; // solo en el PC (el servidor también lo rechaza)
   const doc = state.selectedDoc;
   if (!doc || doc.id !== state.selectedDocId) return;
   closeTagPopover();
@@ -1726,6 +1781,7 @@ function renderPreviewCopias() {
 
 // focoDocId: abre el modal con el grupo de ese documento a la vista
 async function openDupsModal(focoDocId = null) {
+  if (state.remoto) return; // solo en el PC (el servidor también lo rechaza)
   closeTagPopover();
   document.getElementById("dupsModal").style.display = "flex";
   dups.foco = null;

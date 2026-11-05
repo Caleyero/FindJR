@@ -33,6 +33,9 @@ Se usa solo en el PC del usuario, con un favorito a `http://localhost:8766/`.
    puerto propio, `--server` con `0.0.0.0`…) y el usuario lo **descartó** por simplicidad. En su lugar:
    arranque automático al iniciar sesión en Windows en segundo plano permanente
    (`arranque_automatico.ps1`, opciones 10-13 de `menu.bat`). Escucha solo en `127.0.0.1`.
+   - **Acceso desde Internet (noviembre 2026, a petición del usuario)**: en el PC de casa (`jorge`, el
+     mini PC con Docker de `Aplicaciones\Webserver`) sustituye a Oráculo en `https://oraculo.noobe.org`
+     para consultar desde el móvil. Ver «Acceso desde Internet» más abajo. Sigue sin `0.0.0.0` ni servicio.
 5. **PDF, .docx y .xlsx** (`extensions: [".pdf", ".docx", ".xlsx"]`, noviembre 2026, a petición del usuario).
    Word y Excel se leen con `zipfile` + `ElementTree` de la stdlib (son ZIP con XML), **sin dependencias
    nuevas**; PyMuPDF no abre Office (solo la versión Pro). `.docm`/`.xlsm` usan el mismo extractor pero no
@@ -47,6 +50,7 @@ finder/db.py           Esquema SQLite (data/finder_index_<fuente>.db), FTS5, mig
 finder/extraccion.py   Texto: PDF con PyMuPDF (máx. max_pages_text páginas); docx/xlsx con la stdlib. Máx. 400.000 caracteres
 finder/indexador.py    Sincronización incremental en paralelo + bucle en segundo plano
 finder/etiquetas.py    Etiquetas manuales (etiquetas_<fuente>.db, adjunta como «et» en cada conexión)
+finder/remoto.py       Acceso desde Internet: verificación del JWT de Cloudflare Access y lista blanca de rutas
 finder/duplicados.py   Duplicados exactos (SHA-256): huellas, promoción de copias, consolidación, listado
 static/                index.html, app.js, styles.css (estilo cBank)
 tools/probar_api.py    Prueba de humo contra el servidor en marcha
@@ -69,6 +73,35 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
 - `background_loop` sincroniza todas las fuentes (la activa primero). Una fuente sin carpeta o con la
   carpeta inaccesible **no** se sincroniza (antes se vaciaba el índice entero). Quitar una fuente borra su
   índice y conserva `etiquetas_<id>.db` (si se recrea con el mismo nombre, las recupera).
+
+### Acceso desde Internet (`finder/remoto.py`, `remoto` en `finder_config.json`)
+- Cadena: móvil → Cloudflare Access (código por correo, «Solo yo») → Cloudflare Tunnel (contenedor
+  `cloudflare-tunnel`) → Nginx Proxy Manager (proxy host `oraculo.noobe.org` → `http 172.18.0.1 8768`) →
+  relé `finderjr-relay` (`Webserver/apps/finderjr-relay.yml`, socat con `network_mode: host`) →
+  `127.0.0.1:8767` de Windows → **segundo listener** de FinderJR (`servir_remoto`, `server.remoto = True`).
+- Por qué el relé: Docker corre dentro de Ubuntu (WSL, red *mirrored*) y los contenedores **no** llegan al
+  `127.0.0.1` de Windows (comprobado: `host.docker.internal` → *connection refused*); Ubuntu sí.
+  Con *mirrored*, un puerto abierto en Ubuntu queda reservado también en Windows (WinError 10013/10048,
+  incluso por conexiones en TIME-WAIT): por eso relé (8768) y FinderJR (8767) usan puertos distintos y
+  `servir_remoto` reintenta cada 5 s si el puerto está ocupado.
+- Todo lo que entra por el puerto remoto es remoto (no se mira ninguna cabecera para decidirlo). Cada
+  petición debe traer `Cf-Access-Jwt-Assertion`: RS256 verificado con la stdlib (`pow` + PKCS#1 v1.5),
+  claves de `https://<cf_team>/cdn-cgi/access/certs` (caché 1 h), `aud` = `cf_aud`, `iss`, `exp` y `emails`.
+  **Falla cerrado** (sin configurar o sin poder descargar las claves → 503). Así, ni desde la LAN
+  saltándose Access se entra.
+- Desde fuera **solo consultar y etiquetar**: GET libre; POST solo `RUTAS_POST_REMOTAS` (heartbeat,
+  etiquetar, crear etiqueta, cambiar fuente, sincronizar). El resto → 403. `/api/info` devuelve
+  `remoto: true` y la UI oculta lo `.solo-local` (renombrar, Papelera, duplicados, Preferencias, gestionar
+  etiquetas, abrir ubicación); «Abrir» de Word/Excel descarga el archivo.
+- Configuración por puesto: `"remoto": {"activo", "puerto": 8767, "cf_team", "cf_aud", "emails"}`
+  (desactivado por defecto: el PC de la oficina no cambia). Tras cambiarla, reiniciar (opción 13).
+- Requisitos: FinderJR en segundo plano permanente y sesión de Windows iniciada (Docker arranca sin
+  sesión, FinderJR no). En el propio PC lo normal es `http://localhost:8766` (sin Access, todos los
+  permisos). Se quitó `127.0.0.1 oraculo.noobe.org` del `hosts` de Windows (copia en
+  `hosts.antes-finderjr`): con esa línea se iba directo a NPM sin pasar por Access y daba 403.
+- Interfaz móvil (`@media (max-width: 760px)`): un panel cada vez (`body[data-vista]`, barra
+  `#mobileNav`, el botón «atrás» vuelve al panel anterior con `history.pushState`); sin la pestaña
+  «Visor PDF» (el iframe de PDF no funciona en Android). Sirve igual en local con ventana estrecha.
 
 ### Índice (`finder/db.py`, `SCHEMA_VERSION = 3`)
 - `archivos`: un registro por archivo físico (ruta, size, mtime, páginas, `necesita_ocr`, estado OK/ERROR).
@@ -172,6 +205,7 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
   ordenado por fecha).
 
 ### API
+Por el listener remoto solo se admiten los GET y los POST de `remoto.RUTAS_POST_REMOTAS`.
 GET `/api/info`, `/api/search`, `/api/status`, `/api/config`, `/api/doc/<id>[/pdf|/page_image]`,
 `/api/export/csv`, `/api/export/pdf_bundle` (une hasta 300 PDF filtrados), `/api/etiquetas` (con recuentos),
 `/api/fuentes`, `/api/duplicados`, `/api/archivo/<id>/pdf` (también copias).

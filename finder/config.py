@@ -38,6 +38,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "col_fecha_px": 82,
         "col_origen_px": 200,
     },
+    # Acceso desde Internet (Cloudflare Tunnel + Access). Segundo listener en 127.0.0.1:puerto; ver finder/remoto.py
+    "remoto": {
+        "activo": False,
+        "puerto": 8767,
+        "cf_team": "",   # <equipo>.cloudflareaccess.com
+        "cf_aud": "",    # Application Audience (AUD) Tag de la aplicación de Access
+        "emails": [],    # correos admitidos (vacío = cualquiera que Access deje pasar)
+    },
 }
 
 _LOCK = threading.Lock()
@@ -53,8 +61,8 @@ def load_config() -> Dict[str, Any]:
                 for k, v in user.items():
                     if k == "dbges_sources":
                         continue  # obsoleto (versión con entidades)
-                    if k == "ui_layout" and isinstance(v, dict):
-                        cfg["ui_layout"].update(v)
+                    if k in ("ui_layout", "remoto") and isinstance(v, dict):
+                        cfg[k].update(v)
                     else:
                         cfg[k] = v
         except Exception:
