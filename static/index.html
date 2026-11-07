@@ -118,6 +118,9 @@
       <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
       <path d="m15 5 4 4"/>
     </symbol>
+    <symbol id="ico-briefcase" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="7" width="18" height="13" rx="2"></rect><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M3 13h18"></path>
+    </symbol>
     <symbol id="ico-tag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12.59 2.59A2 2 0 0 0 11.17 2H4a2 2 0 0 0-2 2v7.17a2 2 0 0 0 .59 1.42l8.7 8.7a2.43 2.43 0 0 0 3.42 0l6.58-6.58a2.43 2.43 0 0 0 0-3.42z"/>
       <circle cx="7.5" cy="7.5" r="1.2"/>
@@ -245,6 +248,18 @@
           </small>
         </div>
 
+        <!-- EXPEDIENTES: agrupan documentos relacionados bajo un nombre (los crea y llena el usuario) -->
+        <div class="exp-section">
+          <div class="tags-header">
+            <label><svg class="icon icon-label"><use href="#ico-briefcase"></use></svg> Expedientes</label>
+            <button type="button" class="btn-link" id="btnNuevoExp" title="Crear un expediente (puede incluir los resultados de la búsqueda actual)">+ Nuevo</button>
+          </div>
+          <div class="exp-activo" id="expActivo" style="display: none;"></div>
+          <input type="text" id="expBuscar" maxlength="80" placeholder="Buscar expediente…" autocomplete="off" />
+          <div class="exp-list" id="expList"></div>
+          <small class="filter-hint">Clic: ver solo sus documentos (se combina con la búsqueda) · otro clic: quitar el filtro.</small>
+        </div>
+
         <!-- CALENDARIO: documentos por fecha de modificación (la única fecha que se muestra) -->
         <div class="cal-section" id="calSection">
           <div class="tags-header">
@@ -295,6 +310,9 @@
         </div>
         <button type="button" class="btn btn-sm btn-tag-menu" id="btnTagMenu" title="Poner o quitar etiquetas a los documentos marcados o a todos los resultados">
           <svg class="icon"><use href="#ico-tag"></use></svg> <span id="btnTagMenuText">Etiquetar resultados</span> ▾
+        </button>
+        <button type="button" class="btn btn-sm btn-tag-menu" id="btnExpMenu" title="Añadir o quitar de un expediente los documentos marcados o todos los resultados">
+          <svg class="icon"><use href="#ico-briefcase"></use></svg> <span class="btn-label">Expediente</span> ▾
         </button>
         <div class="kpi-group-sort">
           <label for="sortSelect">Ordenar:</label>
@@ -581,6 +599,49 @@
     <div class="tag-popover-title" id="tagPopoverTitle">Etiquetas</div>
     <input type="text" id="tagPopoverInput" maxlength="40" placeholder="Buscar o crear etiqueta…" autocomplete="off" />
     <div class="tag-popover-list" id="tagPopoverList"></div>
+  </div>
+
+  <!-- MENÚ EMERGENTE DE EXPEDIENTES -->
+  <div class="tag-popover" id="expPopover" style="display: none;">
+    <div class="tag-popover-title" id="expPopoverTitle">Expedientes</div>
+    <input type="text" id="expPopoverInput" maxlength="80" placeholder="Buscar o crear expediente…" autocomplete="off" />
+    <div class="tag-popover-list" id="expPopoverList"></div>
+  </div>
+
+  <!-- MODAL CREAR / EDITAR EXPEDIENTE -->
+  <div class="modal-backdrop" id="expModal" style="display: none;">
+    <div class="modal-dialog modal-exp">
+      <div class="modal-header">
+        <h3 class="modal-title"><svg class="icon"><use href="#ico-briefcase"></use></svg> <span id="expModalTitulo">Nuevo expediente</span></h3>
+        <button class="modal-close" id="btnCloseExp">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="expNombre">Nombre</label>
+          <input type="text" id="expNombre" maxlength="80" placeholder="Ej: Inspección Hacienda 2026 o el nº de diligencia" />
+        </div>
+        <div class="form-group">
+          <label>Color</label>
+          <div class="tm-colors" id="expColores"></div>
+        </div>
+        <div class="form-group">
+          <label for="expNotas">Notas</label>
+          <textarea id="expNotas" rows="5" maxlength="4000" placeholder="Descripción, nº de diligencia, inspector, plazos…"></textarea>
+        </div>
+        <label class="checkbox-label" id="expIncluirBox">
+          <input type="checkbox" id="expIncluir" />
+          <span id="expIncluirText">Añadir los resultados de la búsqueda actual</span>
+        </label>
+        <small class="form-help" id="expInfo"></small>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline btn-delete solo-local" id="btnBorrarExp" style="margin-right: auto;" title="Elimina el expediente y sus vínculos; los documentos no se tocan">
+          <svg class="icon"><use href="#ico-trash"></use></svg> Eliminar expediente
+        </button>
+        <button class="btn btn-outline" id="btnCancelExp">Cancelar</button>
+        <button class="btn btn-primary" id="btnGuardarExp"><svg class="icon"><use href="#ico-save"></use></svg> Guardar</button>
+      </div>
+    </div>
   </div>
 
   <!-- MODAL GESTIÓN DE ETIQUETAS -->

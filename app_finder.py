@@ -37,7 +37,7 @@ if sys.stderr is None:
 
 import fitz  # PyMuPDF
 
-from finder import autoetiquetas, config, duplicados, etiquetas, indexador, ocr, remoto
+from finder import autoetiquetas, config, duplicados, etiquetas, expedientes, indexador, ocr, remoto
 from finder.config import BASE_DIR, fuente, load_config, save_config, to_display_path
 from finder.db import borrar_indice, get_conn, init_db, meta_get, meta_set
 from finder.extraccion import SEPARADOR_PAGINA, es_pdf
@@ -160,8 +160,10 @@ def rango_fecha(valor: str) -> Optional[Tuple[float, float]]:
 
 
 def filtros_sql(params: Dict[str, str]) -> Tuple[List[str], List[Any]]:
-    """Filtros que no son de texto: etiquetas y fecha de modificación (`fecha` = día o mes, del calendario)."""
+    """Filtros que no son de texto: etiquetas, expediente y fecha de modificación (`fecha` = día o mes, del calendario)."""
     clauses, sp = etiquetas.filtros_sql(params)
+    ex_c, ex_sp = expedientes.filtros_sql(params)
+    clauses, sp = clauses + ex_c, sp + ex_sp
     r = rango_fecha(params.get("fecha", ""))
     if r:
         clauses.append("d.mtime >= ? AND d.mtime < ?")
@@ -256,10 +258,12 @@ def query_documents(params: Dict[str, str]) -> Dict[str, Any]:
         conn = get_conn()
         try:
             por_ruta = etiquetas.de_rutas(conn, [it["ruta_rel"] for it in items])
+            exp_ruta = expedientes.de_rutas(conn, [it["ruta_rel"] for it in items])
         finally:
             conn.close()
         for it in items:
             it["etiquetas"] = por_ruta.get(it["ruta_rel"], [])
+            it["expedientes"] = exp_ruta.get(it["ruta_rel"], [])
     return {"total_count": total, "limit": limit, "offset": offset, "terms": ps["terms"], "items": items}
 
 
@@ -409,6 +413,7 @@ def get_doc(doc_id: int) -> Optional[Dict[str, Any]]:
     try:
         d["etiquetas"] = etiquetas.de_rutas(conn, [d["ruta_rel"]])[d["ruta_rel"]]
         d["etiquetas_auto"] = etiquetas.automaticas(conn, d["ruta_rel"])
+        d["expedientes"] = expedientes.de_rutas(conn, [d["ruta_rel"]])[d["ruta_rel"]]
         d["copias"] = [{"id": c["id"], "ruta_rel": c["ruta_rel"], "ruta_display": to_display_path(c["ruta"]), "mtime": c["mtime"]}
                        for c in conn.execute("SELECT id, ruta, ruta_rel, mtime FROM archivos WHERE copia_de = ? ORDER BY mtime",
                                              (d["archivo_id"],))]
@@ -467,16 +472,19 @@ def csv_export(params: Dict[str, str]) -> bytes:
     try:
         nombres = {e["id"]: e["nombre"] for e in etiquetas.listar(conn)["items"]}
         por_ruta = etiquetas.de_rutas(conn, [r["ruta_rel"] for r in rows])
+        nombres_exp = {e["id"]: e["nombre"] for e in expedientes.listar(conn)["items"]}
+        exp_ruta = expedientes.de_rutas(conn, [r["ruta_rel"] for r in rows])
     finally:
         conn.close()
     out = io.StringIO()
     w = csv.writer(out, delimiter=";")
-    w.writerow(["ID", "Fecha_modificacion", "Archivo", "Ruta", "Carpeta", "Paginas", "Sin_texto", "Etiquetas"])
+    w.writerow(["ID", "Fecha_modificacion", "Archivo", "Ruta", "Carpeta", "Paginas", "Sin_texto", "Etiquetas", "Expedientes"])
     for r in rows:
         fecha = datetime.datetime.fromtimestamp(r["mtime"]).strftime("%d/%m/%Y") if r["mtime"] else ""
         ets = ", ".join(sorted((nombres[i] for i in por_ruta.get(r["ruta_rel"], []) if i in nombres), key=str.lower))
+        exps = ", ".join(sorted((nombres_exp[i] for i in exp_ruta.get(r["ruta_rel"], []) if i in nombres_exp), key=str.lower))
         w.writerow([r["id"], fecha, r["nombre"], r["ruta_rel"], r["carpeta"], r["num_paginas"],
-                    "SÍ" if r["sin_texto"] else "", ets])
+                    "SÍ" if r["sin_texto"] else "", ets, exps])
     return out.getvalue().encode("utf-8-sig")
 
 
@@ -510,6 +518,33 @@ def etiquetas_listar() -> Dict[str, Any]:
         return etiquetas.listar(conn)
     finally:
         conn.close()
+
+
+def _rutas_destino(payload: Dict[str, Any]) -> List[str]:
+    """Rutas de los documentos indicados (`doc_ids`) o de todos los resultados de una búsqueda (`busqueda`)."""
+    if isinstance(payload.get("busqueda"), dict):
+        params = {k: str(v) for k, v in payload["busqueda"].items()}
+        _, rows, _ = run_query(params, 100000, 0, "d.ruta_rel")
+        return [r["ruta_rel"] for r in rows]
+    ids = [int(x) for x in payload.get("doc_ids") or [] if str(x).isdigit()]
+    conn = get_conn()
+    try:
+        return [r[0] for r in conn.execute(
+            f"SELECT ruta_rel FROM documentos WHERE id IN ({','.join('?' * len(ids)) or 'NULL'})", ids)]
+    finally:
+        conn.close()
+
+
+def expedientar(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Añade o quita documentos (lista o todos los resultados de una búsqueda) de un expediente."""
+    exp_id = int(payload.get("expediente_id") or 0)
+    rutas = _rutas_destino(payload)
+    conn = get_conn()
+    try:
+        cambiados = expedientes.asignar(conn, exp_id, rutas, payload.get("accion", "poner") != "quitar")
+    finally:
+        conn.close()
+    return {"status": "ok", "documentos": len(rutas), "cambiados": cambiados}
 
 
 def etiquetar(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -656,6 +691,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(fuentes_listar())
             if route == "/api/etiquetas":
                 return self.send_json(etiquetas_listar())
+            if route == "/api/expedientes":
+                conn = get_conn()
+                try:
+                    return self.send_json(expedientes.listar(conn))
+                finally:
+                    conn.close()
             if route == "/api/duplicados":
                 return self.send_json(duplicados_listar())
 
@@ -766,7 +807,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(fuente_quitar(m.group(1)))
                 return self.send_json(fuente_modificar(m.group(1), payload))
 
-            if route.startswith(("/api/sync", "/api/open_location", "/api/open_file", "/api/etiquet", "/api/doc/", "/api/duplicados")):
+            if route.startswith(("/api/sync", "/api/open_location", "/api/open_file", "/api/etiquet", "/api/expedient", "/api/doc/", "/api/duplicados")):
                 self._comprobar_fuente(payload)
 
             if route == "/api/sync":
@@ -827,6 +868,25 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(autoetiquetas.vista_previa(conn, payload.get("regla")))
                 finally:
                     conn.close()
+            if route == "/api/expedientes":
+                conn = get_conn()
+                try:
+                    return self.send_json(expedientes.crear(conn, str(payload.get("nombre", "")),
+                                                            str(payload.get("notas", "")), payload.get("color")))
+                finally:
+                    conn.close()
+            m = re.match(r"^/api/expedientes/(\d+)(/borrar)?$", route)
+            if m:
+                conn = get_conn()
+                try:
+                    if m.group(2):
+                        expedientes.borrar(conn, int(m.group(1)))
+                        return self.send_json({"status": "ok"})
+                    return self.send_json(expedientes.modificar(conn, int(m.group(1)), payload))
+                finally:
+                    conn.close()
+            if route == "/api/expedientar":
+                return self.send_json(expedientar(payload))
             if route == "/api/etiquetar":
                 return self.send_json(etiquetar(payload))
 

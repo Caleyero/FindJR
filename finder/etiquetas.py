@@ -18,9 +18,13 @@ from . import config
 
 ALIAS = "et"
 
-# Paleta fija (texto blanco legible sobre todos)
-PALETA = ["#2563eb", "#16a34a", "#dc2626", "#b45309", "#7c3aed",
-          "#db2777", "#0e7490", "#4d7c0f", "#c2410c", "#475569"]
+# Paleta fija en tonos pastel (texto oscuro legible sobre todos): azul, verde, rojo, ámbar, violeta,
+# rosa, turquesa, lima, naranja y gris
+PALETA = ["#bfdbfe", "#bbf7d0", "#fecaca", "#fde68a", "#ddd6fe",
+          "#fbcfe8", "#a5f3fc", "#d9f99d", "#fed7aa", "#e2e8f0"]
+# Paleta anterior (colores intensos con texto blanco, hasta noviembre de 2026): se convierte al mismo tono pastel
+_PALETA_ANTERIOR = ["#2563eb", "#16a34a", "#dc2626", "#b45309", "#7c3aed",
+                    "#db2777", "#0e7490", "#4d7c0f", "#c2410c", "#475569"]
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {ALIAS}.etiquetas (
@@ -68,6 +72,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             if "origen" not in cols:
                 conn.execute(f"ALTER TABLE {ALIAS}.doc_etiqueta ADD COLUMN origen TEXT NOT NULL DEFAULT 'manual'")
         conn.executescript(_SCHEMA)
+        conn.executemany(f"UPDATE {ALIAS}.etiquetas SET color = ? WHERE color = ?", zip(PALETA, _PALETA_ANTERIOR))
 
 
 # ------------------------------------------------------------------------------

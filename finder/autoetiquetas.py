@@ -92,7 +92,7 @@ def vista_previa(conn: sqlite3.Connection, regla: Any) -> Dict[str, Any]:
         elif prefijo and prefijo.match(nombre):
             casi.append(nombre)
     total = conn.execute("SELECT COUNT(*) FROM documentos").fetchone()[0]
-    return {"total": total, "cumplen": cumplen, "por_etiqueta": por_etiqueta,
+    return {"total": total, "cumplen": cumplen, "por_etiqueta": por_etiqueta, "sin_empresas": not regla["empresas"],
             "ejemplos": ejemplos, "casi": casi[:40], "casi_total": len(casi)}
 
 

@@ -23,7 +23,7 @@ import traceback
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import autoetiquetas, duplicados, etiquetas, ocr
+from . import autoetiquetas, duplicados, etiquetas, expedientes, ocr
 from .config import excluded_dirs, fuente, load_config, to_display_path, to_local_path
 from .db import get_conn, init_db, meta_set
 from .extraccion import es_pdf, extract_text
@@ -373,6 +373,7 @@ def renombrar(doc_id: int, nueva_base: str, fid: Optional[str] = None) -> Dict[s
                     conn.execute("UPDATE documentos SET nombre = ?, ruta_rel = ? WHERE archivo_id = ?",
                                  (nombre_nuevo, rel_nuevo, r["id"]))
                     etiquetas.mover(conn, rel_viejo, rel_nuevo)
+                    expedientes.mover(conn, rel_viejo, rel_nuevo)
             except Exception:
                 os.rename(nuevo, viejo)  # el índice no se ha podido actualizar: se deja todo como estaba
                 raise

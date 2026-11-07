@@ -13,7 +13,7 @@ import sqlite3
 import threading
 from typing import Optional
 
-from . import config, etiquetas
+from . import config, etiquetas, expedientes
 from .config import ensure_data_dir
 
 SCHEMA_VERSION = 4
@@ -201,6 +201,7 @@ def _init_db(fid: str) -> None:
     with conn:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
     etiquetas.init_schema(conn)
+    expedientes.init_schema(conn)
     conn.close()
 
 

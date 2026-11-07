@@ -27,6 +27,8 @@ RUTAS_POST_REMOTAS = {
     "/api/heartbeat",
     "/api/etiquetar",       # poner / quitar etiquetas
     "/api/etiquetas",       # crear etiqueta (editar o borrar: solo en el PC)
+    "/api/expedientar",     # añadir / quitar documentos de un expediente
+    "/api/expedientes",     # crear expediente (modificar o eliminar: solo en el PC)
     "/api/fuente/activar",
     "/api/sync",
 }

@@ -17,7 +17,7 @@ import hashlib
 import sqlite3
 from typing import Any, Dict, Iterable, List, Optional
 
-from . import etiquetas
+from . import etiquetas, expedientes
 from .config import to_display_path
 
 
@@ -61,6 +61,7 @@ def copiar_etiquetas(conn: sqlite3.Connection, de_rutas: List[str], a_ruta: str)
             SELECT ?, etiqueta_id FROM {etiquetas.ALIAS}.doc_etiqueta
             WHERE origen = 'manual' AND ruta_rel IN ({','.join('?' * len(claves))})""",
         [etiquetas.clave(a_ruta)] + claves)
+    expedientes.copiar(conn, de_rutas, a_ruta)  # y sus expedientes
 
 
 def promover(conn: sqlite3.Connection, principal_id: int, nuevo_id: Optional[int] = None) -> Optional[int]:

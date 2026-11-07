@@ -29,6 +29,13 @@ const state = {
   filtroEt: new Set(), // deben llevar todas estas
   filtroEtx: new Set(), // no deben llevar ninguna de estas
   sinEt: false, // solo documentos sin ninguna etiqueta
+  // Expedientes (agrupan documentos relacionados)
+  expedientes: [],
+  expMap: {},
+  filtroExp: null, // solo los documentos de este expediente
+  expEditando: null,
+  expColor: null,
+  expTarget: null,
   checked: new Set(), // documentos marcados con la casilla
   lastCheckIdx: null,
   renaming: false, // hay un nombre en edición
@@ -184,12 +191,13 @@ function searchParamsObject() {
   if (state.filtroEt.size) o.et = [...state.filtroEt].join(",");
   if (state.filtroEtx.size) o.etx = [...state.filtroEtx].join(",");
   if (state.sinEt) o.sin_et = "1";
+  if (state.filtroExp) o.exp = String(state.filtroExp);
   if (state.fecha) o.fecha = state.fecha;
   return o;
 }
 
 function hasTagFilter() {
-  return state.filtroEt.size > 0 || state.filtroEtx.size > 0 || state.sinEt;
+  return state.filtroEt.size > 0 || state.filtroEtx.size > 0 || state.sinEt || !!state.filtroExp;
 }
 
 function buildQueryParams() {
@@ -349,6 +357,7 @@ function renderGridRows() {
             <div class="doc-name" title="${state.remoto ? "" : "Doble clic para cambiar el nombre"}">${highlightText(it.nombre, terms)}</div>
             <div class="folder-path-movil">${highlightText(dir === it.ruta_rel ? "(raíz)" : dir, terms)}</div>
             ${tagPillsHtml(it.etiquetas)}
+            ${expPillsHtml(it.expedientes)}
             ${copiaMatch}
             ${hasSearch() ? snippet : ""}
           </td>
@@ -657,11 +666,21 @@ function autoPintarActivo() {
   document.getElementById("prefAutoCuerpo").classList.toggle("off", !document.getElementById("prefAutoActivo").checked);
 }
 
+function autoAlActivar() {
+  autoPintarActivo();
+  // Al activarla sin empresas, se abre la primera fila para escribir el código
+  if (document.getElementById("prefAutoActivo").checked && !document.querySelector("#prefAutoEmpresas .auto-et-emp"))
+    autoAddEmpresa().querySelector(".cod").focus();
+}
+
 async function autoVistaPrevia(fid, regla) {
   return apiPost("/api/autoetiquetas/probar", { fuente_id: fid, regla });
 }
 
 function autoResumenHtml(v) {
+  if (v.sin_empresas)
+    return `<div class="casi">Falta indicar las empresas: pulsa <b>+ Empresa</b> y escribe su código (p. ej. <b>TEX</b>), uno por fila.
+      Solo se etiquetan los archivos cuyo nombre empieza por uno de esos códigos.</div>`;
   const etq = Object.entries(v.por_etiqueta)
     .map(([n, c]) => `<b>${escapeHtml(n)}</b> ${fmtNum(c)}`)
     .join(" · ");
@@ -796,6 +815,11 @@ async function savePrefs() {
       const autoAntes = autoNormal(o.etiquetado_auto);
       if (JSON.stringify(f.etiquetado_auto) !== JSON.stringify(autoAntes)) {
         // Vista previa antes de aplicar la regla a todos los documentos de la fuente
+        if (f.etiquetado_auto.activo && !f.etiquetado_auto.empresas.length) {
+          prefsMostrarFuente(f.id);
+          autoProbar();
+          return showToast(`Etiquetado automático de «${f.nombre}»: añade al menos un código de empresa (+ Empresa).`, 6000);
+        }
         if (f.etiquetado_auto.activo) {
           const v = await autoVistaPrevia(f.id, f.etiquetado_auto);
           if (!confirm(`Etiquetado automático de «${f.nombre}»\n\n${autoResumenTexto(v)}\n\n` +
@@ -906,8 +930,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     state.filtroEt.clear();
     state.filtroEtx.clear();
     state.sinEt = false;
+    state.filtroExp = null;
     state.fecha = "";
     renderTagFilters();
+    renderExpList();
     runSearch(true);
     document.getElementById("qTodas").focus();
   });
@@ -1009,6 +1035,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       if (tagPopoverOpen()) return closeTagPopover();
+      if (expPopoverOpen()) return closeExpPopover();
+      if (document.getElementById("expModal").style.display !== "none") return closeExpModal();
       if (document.getElementById("tagsModal").style.display !== "none") return closeTagsModal();
       if (deleteModalOpen()) return closeDeleteModal();
       if (dupsModalOpen()) return closeDupsModal();
@@ -1061,7 +1089,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btnCancelPrefs").addEventListener("click", closePrefs);
   document.getElementById("btnSavePrefs").addEventListener("click", savePrefs);
   document.getElementById("btnQuitarFuente").addEventListener("click", quitarFuente);
-  document.getElementById("prefAutoActivo").addEventListener("change", autoPintarActivo);
+  document.getElementById("prefAutoActivo").addEventListener("change", autoAlActivar);
   document.getElementById("btnAutoAddEmpresa").addEventListener("click", () => autoAddEmpresa().querySelector(".cod").focus());
   document.getElementById("btnAutoProbar").addEventListener("click", autoProbar);
   document.getElementById("btnReindexAll").addEventListener("click", () => {
@@ -1201,6 +1229,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   })();
 
   initTagsUI();
+  initExpUI();
   initDupsUI();
   document.getElementById("btnDelete").addEventListener("click", openDeleteModal);
   document.getElementById("btnCancelDelete").addEventListener("click", closeDeleteModal);
@@ -1258,6 +1287,7 @@ async function loadEtiquetas() {
   } catch (err) {
     console.error("Error cargando etiquetas:", err);
   }
+  await loadExpedientes(); // van juntos: misma base de datos y mismos momentos de recarga
 }
 
 function sortedTagIds(ids) {
@@ -1442,10 +1472,24 @@ function renderPreviewTags() {
     sortedTagIds(doc.etiquetas)
       .map((id) => tagPill(state.etMap[id], `<button type="button" class="tag-x" title="Quitar etiqueta">&times;</button>`, (doc.etiquetas_auto || []).includes(id)))
       .join("") +
-    `<button type="button" class="tag-add" id="btnPrevAddTag" title="Poner o quitar etiquetas a este documento (o usa las teclas 1-9)">+ Etiqueta</button>`;
-  c.querySelectorAll(".tag-x").forEach((x) =>
+    `<button type="button" class="tag-add" id="btnPrevAddTag" title="Poner o quitar etiquetas a este documento (o usa las teclas 1-9)">+ Etiqueta</button>` +
+    sortedExpIds(doc.expedientes)
+      .map((id) => expPill(state.expMap[id], `<button type="button" class="tag-x exp-x" title="Quitar de este expediente (el documento no se borra)">&times;</button>`))
+      .join("") +
+    `<button type="button" class="tag-add" id="btnPrevAddExp" title="Añadir este documento a un expediente o quitarlo">+ Expediente</button>`;
+  c.querySelectorAll(".tag-x:not(.exp-x)").forEach((x) =>
     x.addEventListener("click", () => applyTag(parseInt(x.parentElement.dataset.tagId, 10), false, currentTarget("doc")))
   );
+  c.querySelectorAll(".exp-x").forEach((x) =>
+    x.addEventListener("click", (e) => {
+      e.stopPropagation();
+      applyExp(parseInt(x.parentElement.dataset.expId, 10), false, currentTarget("doc"));
+    })
+  );
+  c.querySelectorAll(".exp-pill").forEach((p) =>
+    p.addEventListener("click", (e) => !e.target.closest(".exp-x") && filtrarPorExpediente(parseInt(p.dataset.expId, 10)))
+  );
+  document.getElementById("btnPrevAddExp").addEventListener("click", (e) => openExpPopover("doc", e.currentTarget));
   document.getElementById("btnPrevAddTag").addEventListener("click", (e) => openTagPopover("doc", e.currentTarget));
 }
 
@@ -1641,6 +1685,348 @@ function initTagsUI() {
   document.getElementById("btnManageTags").addEventListener("click", openTagsModal);
   document.getElementById("btnCloseTags").addEventListener("click", closeTagsModal);
   document.getElementById("btnDoneTags").addEventListener("click", closeTagsModal);
+}
+
+// ============================================================================
+// EXPEDIENTES (agrupan documentos relacionados; los crea y llena el usuario)
+// ============================================================================
+
+function fold(s) {
+  return (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+}
+
+async function loadExpedientes() {
+  try {
+    const data = await (await fetch("/api/expedientes")).json();
+    state.expedientes = data.items || [];
+    state.paleta = data.paleta || state.paleta;
+    state.expMap = Object.fromEntries(state.expedientes.map((x) => [x.id, x]));
+    if (state.filtroExp && !state.expMap[state.filtroExp]) state.filtroExp = null; // eliminado en otra pestaña
+    renderExpList();
+    if (expPopoverOpen()) renderExpPopover();
+  } catch (err) {
+    console.error("Error cargando expedientes:", err);
+  }
+}
+
+function sortedExpIds(ids) {
+  return (ids || []).filter((id) => state.expMap[id]).sort((a, b) => state.expMap[a].nombre.localeCompare(state.expMap[b].nombre, "es"));
+}
+
+function expPill(x, extra = "") {
+  return `<span class="exp-pill" style="--tag:${x.color}" data-exp-id="${x.id}" title="Expediente «${escapeHtml(x.nombre)}»"><svg class="icon"><use href="#ico-briefcase"></use></svg>${escapeHtml(x.nombre)}${extra}</span>`;
+}
+
+function expPillsHtml(ids) {
+  const list = sortedExpIds(ids);
+  return list.length ? `<div class="row-tags">${list.map((id) => expPill(state.expMap[id])).join("")}</div>` : "";
+}
+
+function filtrarPorExpediente(id) {
+  state.filtroExp = state.filtroExp === id ? null : id;
+  renderExpList();
+  runSearch(true);
+  if (state.filtroExp && esMovil()) setVista("resultados");
+}
+
+function renderExpList() {
+  const act = document.getElementById("expActivo");
+  const x = state.filtroExp && state.expMap[state.filtroExp];
+  if (x) {
+    act.style.display = "";
+    act.style.setProperty("--tag", x.color);
+    act.innerHTML = `
+      <div class="exp-activo-head"><svg class="icon"><use href="#ico-briefcase"></use></svg><b>${escapeHtml(x.nombre)}</b>
+        <span class="count">${fmtNum(x.total)} doc.</span></div>
+      ${x.notas ? `<div class="exp-notas">${escapeHtml(x.notas)}</div>` : ""}
+      <div class="exp-activo-acc">
+        ${state.remoto ? "" : `<button type="button" class="btn btn-xs" id="btnEditExp"><svg class="icon"><use href="#ico-pencil"></use></svg> Editar</button>`}
+        <button type="button" class="btn btn-xs" id="btnQuitarExp" title="Ver todos los documentos otra vez">Quitar filtro</button>
+      </div>`;
+    const ed = document.getElementById("btnEditExp");
+    if (ed) ed.addEventListener("click", () => openExpModal(x));
+    document.getElementById("btnQuitarExp").addEventListener("click", () => filtrarPorExpediente(x.id));
+  } else {
+    act.style.display = "none";
+  }
+  const q = fold(document.getElementById("expBuscar").value.trim());
+  const lista = state.expedientes.filter((e) => !q || fold(e.nombre).includes(q) || fold(e.notas).includes(q));
+  const c = document.getElementById("expList");
+  if (!state.expedientes.length) {
+    c.innerHTML = `<div class="tags-empty">Aún no hay expedientes. Busca los documentos de un asunto y pulsa «+ Nuevo».</div>`;
+  } else if (!lista.length) {
+    c.innerHTML = `<div class="tags-empty">Ningún expediente coincide.</div>`;
+  } else {
+    c.innerHTML = lista
+      .map(
+        (e) => `<button type="button" class="exp-item ${e.id === state.filtroExp ? "on" : ""}" style="--tag:${e.color}" data-id="${e.id}"
+                  title="${escapeHtml(e.notas ? e.notas.slice(0, 300) : "Clic: ver solo sus documentos")}">
+                  <span class="dot"></span><span class="exp-nombre">${escapeHtml(e.nombre)}</span><span class="count">${fmtNum(e.total)}</span></button>`
+      )
+      .join("");
+    c.querySelectorAll(".exp-item").forEach((b) => b.addEventListener("click", () => filtrarPorExpediente(parseInt(b.dataset.id, 10))));
+  }
+}
+
+// ---- Añadir / quitar documentos ----
+
+function expsOfDoc(id) {
+  if (state.selectedDoc && state.selectedDoc.id === id) return state.selectedDoc.expedientes || [];
+  const it = state.items.find((x) => x.id === id);
+  return (it && it.expedientes) || [];
+}
+
+function targetHasExp(target, expId) {
+  if (!target.doc_ids) return null;
+  return target.doc_ids.every((id) => expsOfDoc(id).includes(expId));
+}
+
+async function applyExp(expId, poner, target) {
+  const x = state.expMap[expId];
+  if (!x || !target || !target.n) return;
+  if (target.busqueda && poner && target.n > 25 &&
+      !confirm(`¿Añadir los ${fmtNum(target.n)} documentos de la búsqueda actual al expediente «${x.nombre}»?`)) return;
+  if (target.busqueda && !poner &&
+      !confirm(`¿Quitar del expediente «${x.nombre}» los ${fmtNum(target.n)} documentos de la búsqueda actual?\n(Los documentos no se borran.)`)) return;
+  try {
+    const payload = { expediente_id: expId, accion: poner ? "poner" : "quitar" };
+    if (target.busqueda) payload.busqueda = target.busqueda;
+    else payload.doc_ids = target.doc_ids;
+    const r = await apiPost("/api/expedientar", payload);
+    const ids = target.doc_ids || state.items.map((it) => it.id);
+    ids.forEach((id) => {
+      [state.items.find((o) => o.id === id), state.selectedDoc && state.selectedDoc.id === id ? state.selectedDoc : null].forEach((o) => {
+        if (!o) return;
+        const set = new Set(o.expedientes || []);
+        poner ? set.add(expId) : set.delete(expId);
+        o.expedientes = [...set];
+      });
+    });
+    const quien = target.n === 1 ? "1 documento" : `${fmtNum(target.n)} documentos`;
+    showToast(`${quien} ${poner ? "añadido" : "quitado"}${target.n === 1 ? "" : "s"} ${poner ? "al" : "del"} expediente «${x.nombre}»` +
+      `${r.cambiados !== target.n ? ` (${fmtNum(r.cambiados)} cambiados)` : ""}.`, 2800);
+    await loadExpedientes();
+    if (state.filtroExp) await runSearch(false, { keepPreview: true, keepChecks: true });
+    else {
+      renderGridRows();
+      renderPreviewTags();
+    }
+  } catch (err) {
+    showToast("No se ha podido cambiar el expediente: " + err.message);
+  }
+}
+
+// ---- Menú emergente ----
+
+const expPop = { kind: null };
+
+function expPopoverOpen() {
+  return document.getElementById("expPopover").style.display !== "none";
+}
+
+function openExpPopover(kind, anchor) {
+  closeTagPopover();
+  expPop.kind = kind;
+  const el = document.getElementById("expPopover");
+  el.style.display = "flex";
+  const r = anchor.getBoundingClientRect();
+  el.style.left = `${Math.max(8, Math.min(window.innerWidth - el.offsetWidth - 8, r.left))}px`;
+  el.style.top = `${Math.min(r.bottom + 4, window.innerHeight - el.offsetHeight - 8)}px`;
+  const inp = document.getElementById("expPopoverInput");
+  inp.value = "";
+  renderExpPopover();
+  inp.focus();
+}
+
+function closeExpPopover() {
+  document.getElementById("expPopover").style.display = "none";
+}
+
+function renderExpPopover() {
+  const target = currentTarget(expPop.kind);
+  const list = document.getElementById("expPopoverList");
+  if (!target || !target.n) {
+    document.getElementById("expPopoverTitle").textContent = "No hay documentos que añadir a un expediente";
+    list.innerHTML = "";
+    return;
+  }
+  document.getElementById("expPopoverTitle").textContent = `Expedientes de ${target.label}`;
+  const q = document.getElementById("expPopoverInput").value.trim();
+  const qf = fold(q);
+  const exps = state.expedientes.filter((e) => !qf || fold(e.nombre).includes(qf));
+  const exact = state.expedientes.some((e) => e.nombre.toLowerCase() === q.toLowerCase());
+  let html = exps
+    .map((e) => {
+      const has = targetHasExp(target, e.id);
+      if (has !== null)
+        return `<button type="button" class="tp-row tp-toggle ${has ? "on" : ""}" data-id="${e.id}" data-poner="${has ? 0 : 1}">
+                  <span class="tp-check">${has ? "✓" : ""}</span>${expPill(e)}</button>`;
+      return `<div class="tp-row">${expPill(e)}
+                <span class="tp-actions">
+                  <button type="button" class="btn btn-xs" data-id="${e.id}" data-poner="1">Añadir</button>
+                  <button type="button" class="btn btn-xs" data-id="${e.id}" data-poner="0">Quitar</button>
+                </span></div>`;
+    })
+    .join("");
+  if (q && !exact) html += `<button type="button" class="tp-row tp-create" data-create="1">+ Crear «${escapeHtml(q)}» y añadir</button>`;
+  if (!html) html = `<div class="tags-empty">Escribe un nombre para crear el primer expediente.</div>`;
+  list.innerHTML = html;
+  list.querySelectorAll("[data-poner]").forEach((b) =>
+    b.addEventListener("click", () => applyExp(parseInt(b.dataset.id, 10), b.dataset.poner === "1", currentTarget(expPop.kind)))
+  );
+  const cr = list.querySelector("[data-create]");
+  if (cr) cr.addEventListener("click", createExpFromPopover);
+}
+
+async function createExpFromPopover() {
+  const inp = document.getElementById("expPopoverInput");
+  const nombre = inp.value.trim();
+  if (!nombre) return;
+  try {
+    const x = await apiPost("/api/expedientes", { nombre });
+    inp.value = "";
+    await loadExpedientes();
+    await applyExp(x.id, true, currentTarget(expPop.kind));
+    renderExpPopover();
+  } catch (err) {
+    showToast("No se ha podido crear el expediente: " + err.message);
+  }
+}
+
+// ---- Crear / editar / eliminar ----
+
+function expColorPorDefecto() {
+  const usos = Object.fromEntries((state.paleta || []).map((c) => [c, 0]));
+  state.expedientes.forEach((e) => e.color in usos && usos[e.color]++);
+  return (state.paleta || []).reduce((a, c) => (usos[c] < usos[a] ? c : a), (state.paleta || [])[0]);
+}
+
+function pintarColoresExp() {
+  document.getElementById("expColores").innerHTML = (state.paleta || [])
+    .map((col) => `<button type="button" class="tm-color ${col === state.expColor ? "on" : ""}" style="--tag:${col}" data-color="${col}" title="Elegir color"></button>`)
+    .join("");
+  document.querySelectorAll("#expColores .tm-color").forEach((b) =>
+    b.addEventListener("click", () => {
+      state.expColor = b.dataset.color;
+      pintarColoresExp();
+    })
+  );
+}
+
+function openExpModal(exp = null) {
+  if (exp && state.remoto) return; // modificar y eliminar, solo en el PC
+  closeExpPopover();
+  state.expEditando = exp ? exp.id : null;
+  state.expColor = exp ? exp.color : expColorPorDefecto();
+  document.getElementById("expModalTitulo").textContent = exp ? "Editar expediente" : "Nuevo expediente";
+  document.getElementById("expNombre").value = exp ? exp.nombre : "";
+  document.getElementById("expNotas").value = exp ? exp.notas || "" : "";
+  pintarColoresExp();
+  // Al crear: ofrecer los documentos marcados o los resultados de la búsqueda actual
+  const box = document.getElementById("expIncluirBox");
+  const target = exp ? null : currentTarget("bulk");
+  state.expTarget = target && target.n ? target : null;
+  box.style.display = state.expTarget ? "" : "none";
+  if (state.expTarget) {
+    document.getElementById("expIncluirText").textContent = state.checked.size
+      ? `Añadir los ${fmtNum(target.n)} documentos marcados`
+      : `Añadir ${target.n === 1 ? "el resultado" : `los ${fmtNum(target.n)} resultados`} de la búsqueda actual`;
+    document.getElementById("expIncluir").checked = state.checked.size > 0 || hasSearch() || hasTagFilter() || !!state.fecha;
+  }
+  document.getElementById("btnBorrarExp").style.display = exp && !state.remoto ? "" : "none";
+  document.getElementById("expInfo").textContent = exp
+    ? `${fmtNum(exp.total)} documentos en el expediente. Eliminarlo solo quita el expediente y sus vínculos: los documentos no se tocan.`
+    : "Después podrás añadir o quitar documentos con el botón «Expediente» de los resultados o «+ Expediente» de la previsualización.";
+  document.getElementById("expModal").style.display = "flex";
+  document.getElementById("expNombre").focus();
+}
+
+function closeExpModal() {
+  document.getElementById("expModal").style.display = "none";
+}
+
+async function guardarExp() {
+  const datos = {
+    nombre: document.getElementById("expNombre").value.trim(),
+    notas: document.getElementById("expNotas").value,
+    color: state.expColor,
+  };
+  if (!datos.nombre) return document.getElementById("expNombre").focus();
+  const btn = document.getElementById("btnGuardarExp");
+  btn.disabled = true;
+  try {
+    if (state.expEditando) {
+      await apiPost(`/api/expedientes/${state.expEditando}`, datos);
+      showToast(`Expediente «${datos.nombre}» guardado.`, 2400);
+    } else {
+      const x = await apiPost("/api/expedientes", datos);
+      let n = 0;
+      if (state.expTarget && document.getElementById("expIncluir").checked) {
+        const payload = { expediente_id: x.id, accion: "poner" };
+        if (state.expTarget.busqueda) payload.busqueda = state.expTarget.busqueda;
+        else payload.doc_ids = state.expTarget.doc_ids;
+        n = (await apiPost("/api/expedientar", payload)).cambiados;
+        state.filtroExp = x.id; // se ve el expediente recién creado con sus documentos
+      }
+      showToast(`Expediente «${x.nombre}» creado${n ? ` con ${fmtNum(n)} documento${n === 1 ? "" : "s"}` : ""}.`, 3200);
+    }
+    closeExpModal();
+    await loadExpedientes();
+    await runSearch(false, { keepPreview: true, keepChecks: true });
+  } catch (err) {
+    showToast(err.message, 6000);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function borrarExp() {
+  const x = state.expMap[state.expEditando];
+  if (!x) return;
+  const aviso = x.total ? `Tiene ${fmtNum(x.total)} documentos vinculados: se deshace el vínculo, los documentos no se tocan.` : "No tiene documentos.";
+  if (!confirm(`¿Eliminar el expediente «${x.nombre}»?\n\n${aviso}`)) return;
+  try {
+    await apiPost(`/api/expedientes/${x.id}/borrar`, {});
+  } catch (err) {
+    return showToast(err.message, 6000);
+  }
+  if (state.filtroExp === x.id) state.filtroExp = null;
+  closeExpModal();
+  showToast(`Expediente «${x.nombre}» eliminado.`, 2800);
+  await loadExpedientes();
+  await runSearch(false, { keepPreview: true, keepChecks: true });
+}
+
+function initExpUI() {
+  document.getElementById("btnNuevoExp").addEventListener("click", () => openExpModal());
+  document.getElementById("expBuscar").addEventListener("input", renderExpList);
+  document.getElementById("btnExpMenu").addEventListener("click", (e) => {
+    e.stopPropagation();
+    expPopoverOpen() && expPop.kind === "bulk" ? closeExpPopover() : openExpPopover("bulk", e.currentTarget);
+  });
+  document.getElementById("expPopoverInput").addEventListener("input", renderExpPopover);
+  document.getElementById("expPopoverInput").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const q = e.target.value.trim().toLowerCase();
+    if (!q) return;
+    const x = state.expedientes.find((o) => o.nombre.toLowerCase() === q);
+    if (!x) return createExpFromPopover();
+    const target = currentTarget(expPop.kind);
+    const has = targetHasExp(target, x.id);
+    applyExp(x.id, has === null ? true : !has, target);
+    e.target.value = "";
+  });
+  document.addEventListener("mousedown", (e) => {
+    if (!expPopoverOpen()) return;
+    if (e.target.closest("#expPopover") || e.target.closest("#btnExpMenu") || e.target.closest("#btnPrevAddExp")) return;
+    closeExpPopover();
+  });
+  document.getElementById("btnCloseExp").addEventListener("click", closeExpModal);
+  document.getElementById("btnCancelExp").addEventListener("click", closeExpModal);
+  document.getElementById("btnGuardarExp").addEventListener("click", guardarExp);
+  document.getElementById("btnBorrarExp").addEventListener("click", borrarExp);
+  document.getElementById("expNombre").addEventListener("keydown", (e) => e.key === "Enter" && (e.preventDefault(), guardarExp()));
 }
 
 // ============================================================================
@@ -1880,9 +2266,12 @@ async function entrarEnFuente(info) {
   state.filtroEt.clear();
   state.filtroEtx.clear();
   state.sinEt = false;
+  state.filtroExp = null;
+  document.getElementById("expBuscar").value = "";
   state.checked.clear();
   state.lastCheckIdx = null;
   closeTagPopover();
+  closeExpPopover();
   resetPreview();
   await loadInfo();
   await loadEtiquetas();

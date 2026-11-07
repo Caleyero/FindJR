@@ -26,6 +26,9 @@ Se usa solo en el PC del usuario, con un favorito a `http://localhost:8766/`.
      usuario)**: única excepción, porque la regla la configura él en Preferencias y se basa en lo que dice
      literalmente el nombre. Ver «Etiquetado automático» más abajo. El proveedor **no** se convierte en
      etiqueta (345 distintos inundarían la lista); se encuentra escribiéndolo en la búsqueda.
+   - **Expedientes (noviembre 2026, a petición del usuario):** agrupan documentos relacionados bajo un nombre
+     (p. ej. «Inspección Hacienda» o un nº de diligencia). Mismo principio que las etiquetas: los crea y
+     llena siempre el usuario. Ver «Expedientes» más abajo.
    - Restos de esa etapa: `db._migrate_v1` (migración v1→v2 del índice) y el descarte de la clave
      obsoleta `dbges_sources` en `config.load_config`. Se pueden mantener; no hacen daño.
 2. **Interfaz replicada de cBank** (`C:\Users\ofici\Documents\Python\cBank`): tres paneles
@@ -55,6 +58,7 @@ finder/extraccion.py   Texto: PDF con PyMuPDF (máx. max_pages_text páginas); d
 finder/indexador.py    Sincronización incremental en paralelo + bucle en segundo plano
 finder/etiquetas.py    Etiquetas manuales (etiquetas_<fuente>.db, adjunta como «et» en cada conexión)
 finder/autoetiquetas.py Regla de facturas por el nombre del archivo (EMP_PROVEEDOR - NÚMERO)
+finder/expedientes.py  Expedientes (nombre, notas, color) y sus documentos, en etiquetas_<fuente>.db
 finder/ocr.py          OCR de los escaneados con el OCR de Windows (ocr_windows.ps1) + caché ocr_cache.db
 finder/remoto.py       Acceso desde Internet: verificación del JWT de Cloudflare Access y lista blanca de rutas
 finder/duplicados.py   Duplicados exactos (SHA-256): huellas, promoción de copias, consolidación, listado
@@ -95,8 +99,9 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
   claves de `https://<cf_team>/cdn-cgi/access/certs` (caché 1 h), `aud` = `cf_aud`, `iss`, `exp` y `emails`.
   **Falla cerrado** (sin configurar o sin poder descargar las claves → 503). Así, ni desde la LAN
   saltándose Access se entra.
-- Desde fuera **solo consultar y etiquetar**: GET libre; POST solo `RUTAS_POST_REMOTAS` (heartbeat,
-  etiquetar, crear etiqueta, cambiar fuente, sincronizar). El resto → 403. `/api/info` devuelve
+- Desde fuera **solo consultar, etiquetar y llenar expedientes**: GET libre; POST solo `RUTAS_POST_REMOTAS`
+  (heartbeat, etiquetar, crear etiqueta, crear expediente, añadir/quitar de un expediente, cambiar fuente,
+  sincronizar). El resto → 403. `/api/info` devuelve
   `remoto: true` y la UI oculta lo `.solo-local` (renombrar, Papelera, duplicados, Preferencias, gestionar
   etiquetas, abrir ubicación); «Abrir» de Word/Excel descarga el archivo.
 - Configuración por puesto: `"remoto": {"activo", "puerto": 8767, "cf_team", "cf_aud", "emails"}`
@@ -195,6 +200,26 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
 - UI: las automáticas se ven en la previsualización con ⚙ y rayado (`tag-pill.auto`, `get_doc` →
   `etiquetas_auto`).
 
+### Expedientes (`finder/expedientes.py`, noviembre 2026, a petición del usuario)
+- Entidad propia, no un tipo de etiqueta: crecen sin límite (inundarían la lista plana de etiquetas) y
+  tienen notas. Campos: nombre (único sin mayúsculas, 80 car.), notas (4.000 car.), color de `PALETA`.
+  Sin estado abierto/cerrado (el usuario no lo quiso). Un documento puede estar en **varios**.
+- Tablas `et.expedientes` y `et.doc_expediente (ruta_rel, expediente_id)` en `etiquetas_<fuente>.db`
+  (`init_schema` desde `db.init_db`): mismas copias de seguridad que las etiquetas. Vínculo por `ruta_rel`
+  con «/», como las etiquetas: sobrevive a reindexar; `mover` al renombrar desde la app; `copiar` en
+  duplicados (`copiar_etiquetas`). Mover/renombrar fuera de la app deja el vínculo huérfano.
+- Eliminar un expediente borra el expediente y sus vínculos; **nunca** los documentos.
+- Filtro `exp=<id>` en `filtros_sql` (se combina con la búsqueda; CSV —columna «Expedientes»— y
+  `pdf_bundle` lo respetan). `modificado_en` se actualiza al editar y al añadir/quitar documentos; la lista
+  sale ordenada por él.
+- Desde el móvil: consultar, crear (`/api/expedientes`) y añadir/quitar (`/api/expedientar`); modificar y
+  eliminar, solo en el PC.
+- UI: sección «Expedientes» del panel de búsqueda (buscador por nombre y notas, lista; clic = filtro, con
+  ficha con notas, «Editar» y «Quitar filtro»); botón «Expediente ▾» de los resultados (marcados o todos);
+  «+ Expediente» y pastillas con × en la previsualización (clic en la pastilla = filtrar). «+ Nuevo» ofrece
+  añadir los marcados o los resultados de la búsqueda actual y deja activo el filtro del expediente creado.
+  Pastillas: borde izquierdo del color y fondo blanco (las etiquetas van rellenas).
+
 ### Word y Excel (`finder/extraccion.py`, `extract_text` elige por extensión)
 - **docx**: cuerpo, encabezados, pies y notas (sin repetir bloques idénticos); un párrafo por línea y cada
   fila de tabla en una línea con las celdas separadas por « | ». `num_paginas` = `<Pages>` de
@@ -262,12 +287,14 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
 Por el listener remoto solo se admiten los GET y los POST de `remoto.RUTAS_POST_REMOTAS`.
 GET `/api/info`, `/api/search`, `/api/status`, `/api/calendario`, `/api/config`, `/api/doc/<id>[/pdf|/page_image]`,
 `/api/export/csv`, `/api/export/pdf_bundle` (une hasta 300 PDF filtrados), `/api/etiquetas` (con recuentos),
-`/api/fuentes`, `/api/duplicados`, `/api/archivo/<id>/pdf` (también copias).
+`/api/fuentes`, `/api/duplicados`, `/api/archivo/<id>/pdf` (también copias), `/api/expedientes` (con recuentos).
 POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en el archivo), `/api/open_file` (lo abre con su programa),
 `/api/layout` (guarda anchos de paneles en `finder_config.json`), `/api/config`,
 `/api/etiquetas` (crear), `/api/etiquetas/<id>` (nombre/color/tecla), `/api/etiquetas/<id>/borrar`,
 `/api/etiquetar` (`etiqueta_id`, `accion` poner|quitar, `doc_ids` o `busqueda`), `/api/doc/<id>/renombrar`, `/api/doc/<id>/eliminar {copias}`, `/api/doc/<id>/ocr`,
 `/api/duplicados/resolver {grupos: [{conservar, eliminar}]}`, `/api/duplicados/visto`, `/api/autoetiquetas/probar {fuente_id, regla}`,
+`/api/expedientes` (crear {nombre, notas, color}), `/api/expedientes/<id>` (modificar), `/api/expedientes/<id>/borrar`,
+`/api/expedientar` (`expediente_id`, `accion` poner|quitar, `doc_ids` o `busqueda`),
 `/api/fuente/activar {id}`, `/api/fuentes` (crear), `/api/fuentes/<id>` (modificar), `/api/fuentes/<id>/borrar`.
 
 ### Ciclo de vida del proceso

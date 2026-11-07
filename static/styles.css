@@ -1305,8 +1305,9 @@ mark.hl {
   max-width: 100%;
   padding: 1px 7px;
   border-radius: 999px;
-  background: var(--tag, #475569);
-  color: #fff;
+  background: var(--tag, #e2e8f0);
+  color: #1e293b;
+  border: 1px solid rgba(15, 23, 42, 0.1);
   font-size: 10.5px;
   font-weight: 600;
   line-height: 1.5;
@@ -1368,13 +1369,14 @@ mark.hl {
   height: 9px;
   border-radius: 50%;
   background: var(--tag);
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.18);
   flex-shrink: 0;
 }
 .tag-chip .dot-key {
   width: 15px;
   height: 15px;
   margin-left: -3px;
-  color: #fff;
+  color: #1e293b;
   font-size: 9.5px;
   font-weight: 700;
   line-height: 15px;
@@ -1396,16 +1398,17 @@ mark.hl {
   background: #f8fafc;
 }
 .tag-chip.on {
-  background: var(--tag, #334155);
-  border-color: var(--tag, #334155);
-  color: #fff;
+  background: var(--tag, #e2e8f0);
+  border-color: rgba(15, 23, 42, 0.45);
+  color: #0f172a;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.12);
 }
 .tag-chip.on .dot {
   background: #fff;
-  color: var(--tag);
+  color: #1e293b;
 }
 .tag-chip.on .count {
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(15, 23, 42, 0.7);
   background: transparent;
   border-color: rgba(255, 255, 255, 0.5);
 }
@@ -1509,8 +1512,8 @@ mark.hl {
 }
 .tag-x {
   border: none;
-  background: rgba(255, 255, 255, 0.22);
-  color: #fff;
+  background: rgba(15, 23, 42, 0.1);
+  color: #334155;
   border-radius: 50%;
   width: 15px;
   height: 15px;
@@ -1520,7 +1523,7 @@ mark.hl {
   padding: 0;
 }
 .tag-x:hover {
-  background: rgba(255, 255, 255, 0.45);
+  background: rgba(15, 23, 42, 0.22);
 }
 .tag-add {
   border: 1px dashed #94a3b8;
@@ -1639,8 +1642,11 @@ div.tp-row:hover {
   cursor: pointer;
   padding: 0;
 }
+.tm-color {
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.15);
+}
 .tm-color.on {
-  outline: 2px solid var(--tag);
+  outline: 2px solid #475569;
 }
 .tm-key {
   width: auto;
@@ -1900,7 +1906,7 @@ div.tp-row:hover {
   color: #b45309;
 }
 .tag-pill.auto {
-  background-image: repeating-linear-gradient(135deg, transparent 0 5px, rgba(255, 255, 255, 0.18) 5px 8px);
+  background-image: repeating-linear-gradient(135deg, transparent 0 5px, rgba(255, 255, 255, 0.55) 5px 8px);
 }
 .tag-pill.auto::before {
   content: "⚙";
@@ -2514,4 +2520,152 @@ body.remoto .prev-copias {
   .tab-btn {
     min-height: 34px;
   }
+}
+
+/* ============================================================================
+   EXPEDIENTES (agrupan documentos relacionados; los crea y llena el usuario)
+   ============================================================================ */
+.exp-section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+.exp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 210px;
+  overflow-y: auto;
+}
+.exp-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 4px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-main);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.exp-item:hover {
+  background: #f1f5f9;
+}
+.exp-item.on {
+  background: var(--tag);
+  border-color: rgba(15, 23, 42, 0.35);
+  font-weight: 600;
+}
+.exp-item .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--tag);
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.2);
+  flex-shrink: 0;
+}
+.exp-item .exp-nombre {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.exp-item .count,
+.exp-activo .count {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.exp-activo {
+  border: 1px solid rgba(15, 23, 42, 0.2);
+  border-left: 5px solid var(--tag);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.exp-activo-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+.exp-activo-head b {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+.exp-notas {
+  font-size: 11.5px;
+  color: #334155;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 140px;
+  overflow-y: auto;
+  background: #f8fafc;
+  border-radius: 4px;
+  padding: 5px 7px;
+}
+.exp-activo-acc {
+  display: flex;
+  gap: 6px;
+}
+.exp-activo-acc .btn-xs {
+  border: 1px solid #cbd5e1;
+  color: var(--text-main);
+}
+/* Pastilla de expediente: borde del color y fondo blanco (las etiquetas van rellenas) */
+.exp-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 0 7px 0 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(15, 23, 42, 0.25);
+  border-left: 4px solid var(--tag);
+  background: #fff;
+  color: #1e293b;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.exp-pill .icon {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  color: #64748b;
+}
+.prev-tags .exp-pill {
+  font-size: 11.5px;
+  padding: 1px 4px 1px 6px;
+  cursor: pointer;
+}
+.prev-tags .exp-pill:first-of-type {
+  margin-left: 6px;
+}
+.modal-exp {
+  width: 520px;
+}
+.modal-exp textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  box-sizing: border-box;
 }
