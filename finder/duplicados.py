@@ -129,7 +129,7 @@ def contar(conn: sqlite3.Connection) -> Dict[str, int]:
 def listar(conn: sqlite3.Connection, revisado: str = "") -> Dict[str, Any]:
     """Grupos de duplicados para el panel: la principal primero y después sus copias."""
     filas = conn.execute(
-        """SELECT a.id, a.ruta, a.ruta_rel, a.nombre, a.size, a.mtime, a.copia_de, a.indexado_en, d.id AS doc_id
+        """SELECT a.id, a.ruta, a.ruta_rel, a.nombre, a.size, a.mtime, a.hash, a.copia_de, a.indexado_en, d.id AS doc_id
            FROM archivos a LEFT JOIN documentos d ON d.archivo_id = a.id
            WHERE a.copia_de IS NOT NULL
               OR a.id IN (SELECT copia_de FROM archivos WHERE copia_de IS NOT NULL)""").fetchall()
@@ -137,7 +137,9 @@ def listar(conn: sqlite3.Connection, revisado: str = "") -> Dict[str, Any]:
     grupos: Dict[int, Dict[str, Any]] = {}
     for f in filas:
         pid = f["copia_de"] or f["id"]
-        g = grupos.setdefault(pid, {"principal": pid, "size": f["size"], "miembros": [], "reciente": ""})
+        g = grupos.setdefault(pid, {"principal": pid, "size": f["size"], "hash": "", "miembros": [], "reciente": ""})
+        if f["copia_de"] is None:
+            g["hash"] = f["hash"] or ""
         nuevo = bool(f["copia_de"]) and bool(revisado) and (f["indexado_en"] or "") > revisado
         g["miembros"].append({
             "id": f["id"], "doc_id": f["doc_id"], "nombre": f["nombre"], "ruta_rel": f["ruta_rel"],

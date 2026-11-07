@@ -1864,7 +1864,7 @@ function renderDups() {
     return;
   }
   list.innerHTML = dups.grupos
-    .map((g) => {
+    .map((g, i) => {
       const keep = dups.keep.get(g.principal);
       const sobran = g.miembros.length - 1;
       const filas = g.miembros
@@ -1881,6 +1881,7 @@ function renderDups() {
               <div class="dups-path">${escapeHtml(dir === m.ruta_rel ? "(raíz)" : dir)}</div>
               ${tagPillsHtml(m.etiquetas)}
             </div>
+            <div class="dups-destino">${m.id === keep ? "Se conserva" : "A la Papelera"}</div>
             <div class="dups-date" title="Fecha de modificación">${formatDateFromEpoch(m.mtime)}</div>
             <div class="dups-actions">
               <a class="btn btn-xs" href="/api/archivo/${m.id}/pdf?${fuenteQuery().slice(1)}" target="_blank" title="Abrir en una pestaña nueva"><svg class="icon"><use href="#ico-external-link"></use></svg></a>
@@ -1892,7 +1893,11 @@ function renderDups() {
       return `
         <div class="dups-group ${g.principal === dups.foco ? "focus" : ""}" data-g="${g.principal}">
           <div class="dups-group-head">
-            <span>${g.miembros.length} archivos idénticos · ${fmtSize(g.size)} cada uno</span>
+            <span>
+              <b class="dups-num">Grupo ${fmtNum(i + 1)} de ${fmtNum(n)}</b>
+              · ${g.miembros.length === 2 ? "Estos 2 archivos son idénticos entre sí" : `Estos ${g.miembros.length} archivos son idénticos entre sí`}
+              · ${fmtSize(g.size)} cada uno${g.hash ? ` · <span class="dups-hash" title="Huella SHA-256 común a todos los archivos de este grupo">huella ${escapeHtml(g.hash.slice(0, 12))}…</span>` : ""}
+            </span>
             <button type="button" class="btn btn-xs btn-danger" data-act="grupo" ${dups.busy ? "disabled" : ""}>
               Eliminar ${sobran === 1 ? "la copia" : `las ${sobran} copias`}
             </button>

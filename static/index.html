@@ -538,9 +538,11 @@
         <div class="dups-resumen">
           <div>
             <strong id="dupsResumen"></strong>
-            <small class="form-help">Archivos idénticos byte a byte. Solo se indexa uno de cada grupo, así que en los resultados
-              no salen repetidos. En cada grupo, marca el que quieres conservar: los demás van a la Papelera de reciclaje.
-              Antes de borrar se comprueba de nuevo que siguen siendo idénticos.</small>
+            <small class="form-help">Cada recuadro es un <b>grupo independiente</b>: solo son idénticos (byte a byte) los archivos
+              de un mismo recuadro; los de recuadros distintos no se han comparado entre sí y no tienen nada que ver.
+              Solo se indexa uno de cada grupo, así que en los resultados no salen repetidos. En cada grupo, marca el que
+              quieres conservar: los demás van a la Papelera de reciclaje. Antes de borrar se comprueba de nuevo que
+              siguen siendo idénticos.</small>
           </div>
           <button class="btn btn-sm btn-danger" id="btnDupsTodos"><svg class="icon"><use href="#ico-trash"></use></svg> <span id="btnDupsTodosText">Eliminar las copias de todos</span></button>
         </div>
