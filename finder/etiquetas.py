@@ -3,8 +3,9 @@
 Etiquetas manuales de FinderJR (etiquetas_<fuente>.db en la raíz del proyecto: un catálogo
 independiente por cada fuente de documentos).
 
-Las pone siempre el usuario: el programa nunca etiqueta por su cuenta (ver la decisión 1 de
-CLAUDE.md). Viven en una base de datos aparte porque el índice (data/) se regenera; se vinculan
+Las pone el usuario, a mano o con la regla de etiquetado automático por el nombre del archivo que él
+mismo configura (finder/autoetiquetas.py; `origen = 'auto'`). El programa nunca sugiere etiquetas ni
+etiqueta por su cuenta (ver la decisión 1 de CLAUDE.md). Viven en una base de datos aparte porque el índice (data/) se regenera; se vinculan
 a cada documento por su ruta relativa a la Biblioteca, normalizada con «/», de modo que
 sobreviven a la reindexación y a la modificación del archivo. Si un archivo se mueve o se
 renombra, sus etiquetas quedan huérfanas (no se ven) y reaparecen si vuelve a su ruta.
@@ -33,9 +34,16 @@ CREATE TABLE IF NOT EXISTS {ALIAS}.doc_etiqueta (
     ruta_rel     TEXT NOT NULL,         -- relativa a la Biblioteca, separador «/»
     etiqueta_id  INTEGER NOT NULL REFERENCES etiquetas(id) ON DELETE CASCADE,
     asignada_en  TEXT DEFAULT (datetime('now', 'localtime')),
+    origen       TEXT NOT NULL DEFAULT 'manual',   -- manual | auto (regla por el nombre del archivo)
     PRIMARY KEY (ruta_rel, etiqueta_id)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS {ALIAS}.idx_de_etiqueta ON doc_etiqueta(etiqueta_id);
+-- Etiquetas que el usuario ha quitado a mano: la regla automática no las vuelve a poner
+CREATE TABLE IF NOT EXISTS {ALIAS}.rechazos (
+    ruta_rel     TEXT NOT NULL,
+    etiqueta_id  INTEGER NOT NULL,
+    PRIMARY KEY (ruta_rel, etiqueta_id)
+) WITHOUT ROWID;
 """
 
 # Expresión SQL de la clave de un documento del índice (alias «d» = documentos)
@@ -53,6 +61,12 @@ def attach(conn: sqlite3.Connection, fid: str) -> None:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     with conn:
+        # Antes de crear tablas: un doc_etiqueta anterior (sin «origen») se completa aquí
+        existe = conn.execute(f"SELECT 1 FROM {ALIAS}.sqlite_master WHERE name = 'doc_etiqueta'").fetchone()
+        if existe:
+            cols = [r[1] for r in conn.execute(f"PRAGMA {ALIAS}.table_info(doc_etiqueta)")]
+            if "origen" not in cols:
+                conn.execute(f"ALTER TABLE {ALIAS}.doc_etiqueta ADD COLUMN origen TEXT NOT NULL DEFAULT 'manual'")
         conn.executescript(_SCHEMA)
 
 
@@ -78,7 +92,7 @@ def _siguiente_tecla(conn: sqlite3.Connection) -> Optional[int]:
     return next((n for n in range(1, 10) if n not in usadas), None)
 
 
-def crear(conn: sqlite3.Connection, nombre: str, color: Optional[str] = None) -> Dict[str, Any]:
+def crear(conn: sqlite3.Connection, nombre: str, color: Optional[str] = None, con_tecla: bool = True) -> Dict[str, Any]:
     nombre = " ".join((nombre or "").split())[:40]
     if not nombre:
         raise ValueError("El nombre de la etiqueta está vacío.")
@@ -93,7 +107,7 @@ def crear(conn: sqlite3.Connection, nombre: str, color: Optional[str] = None) ->
         color = min(PALETA, key=lambda c: usos[c])
     with conn:
         cur = conn.execute(f"INSERT INTO {ALIAS}.etiquetas (nombre, color, tecla) VALUES (?, ?, ?)",
-                           (nombre, color, _siguiente_tecla(conn)))
+                           (nombre, color, _siguiente_tecla(conn) if con_tecla else None))
     return dict(conn.execute(f"SELECT id, nombre, color, tecla FROM {ALIAS}.etiquetas WHERE id = ?",
                              (cur.lastrowid,)).fetchone())
 
@@ -122,6 +136,7 @@ def modificar(conn: sqlite3.Connection, etiqueta_id: int, datos: Dict[str, Any])
 def borrar(conn: sqlite3.Connection, etiqueta_id: int) -> None:
     with conn:
         conn.execute(f"DELETE FROM {ALIAS}.doc_etiqueta WHERE etiqueta_id = ?", (etiqueta_id,))
+        conn.execute(f"DELETE FROM {ALIAS}.rechazos WHERE etiqueta_id = ?", (etiqueta_id,))
         conn.execute(f"DELETE FROM {ALIAS}.etiquetas WHERE id = ?", (etiqueta_id,))
 
 
@@ -130,7 +145,9 @@ def borrar(conn: sqlite3.Connection, etiqueta_id: int) -> None:
 # ------------------------------------------------------------------------------
 
 def asignar(conn: sqlite3.Connection, etiqueta_id: int, rutas_rel: Iterable[str], poner: bool) -> int:
-    """Pone o quita una etiqueta a varios documentos. Devuelve cuántos han cambiado."""
+    """Pone o quita (a mano) una etiqueta a varios documentos. Devuelve cuántos han cambiado.
+    Poner a mano una automática la convierte en manual; quitarla deja constancia en `rechazos`
+    para que la regla automática no la vuelva a poner."""
     if not conn.execute(f"SELECT 1 FROM {ALIAS}.etiquetas WHERE id = ?", (etiqueta_id,)).fetchone():
         raise ValueError("La etiqueta no existe.")
     filas = [(clave(r), etiqueta_id) for r in dict.fromkeys(rutas_rel) if r]
@@ -138,9 +155,14 @@ def asignar(conn: sqlite3.Connection, etiqueta_id: int, rutas_rel: Iterable[str]
         antes = conn.total_changes
         if poner:
             conn.executemany(f"INSERT OR IGNORE INTO {ALIAS}.doc_etiqueta (ruta_rel, etiqueta_id) VALUES (?, ?)", filas)
+            cambiados = conn.total_changes - antes
+            conn.executemany(f"UPDATE {ALIAS}.doc_etiqueta SET origen = 'manual' WHERE ruta_rel = ? AND etiqueta_id = ?", filas)
+            conn.executemany(f"DELETE FROM {ALIAS}.rechazos WHERE ruta_rel = ? AND etiqueta_id = ?", filas)
         else:
             conn.executemany(f"DELETE FROM {ALIAS}.doc_etiqueta WHERE ruta_rel = ? AND etiqueta_id = ?", filas)
-        return conn.total_changes - antes
+            cambiados = conn.total_changes - antes
+            conn.executemany(f"INSERT OR IGNORE INTO {ALIAS}.rechazos (ruta_rel, etiqueta_id) VALUES (?, ?)", filas)
+        return cambiados
 
 
 def de_rutas(conn: sqlite3.Connection, rutas_rel: List[str]) -> Dict[str, List[int]]:
@@ -155,6 +177,19 @@ def de_rutas(conn: sqlite3.Connection, rutas_rel: List[str]) -> Dict[str, List[i
                 lote):
             out[por_clave[r[0]]].append(r[1])
     return out
+
+
+def automaticas(conn: sqlite3.Connection, ruta_rel: str) -> List[int]:
+    """Ids de las etiquetas de un documento puestas por la regla automática."""
+    return [r[0] for r in conn.execute(
+        f"SELECT etiqueta_id FROM {ALIAS}.doc_etiqueta WHERE ruta_rel = ? AND origen = 'auto'", (clave(ruta_rel),))]
+
+
+def mover(conn: sqlite3.Connection, rel_viejo: str, rel_nuevo: str) -> None:
+    """Las etiquetas (y los rechazos) de un documento pasan a su nueva ruta (renombrado)."""
+    for tabla in ("doc_etiqueta", "rechazos"):
+        conn.execute(f"UPDATE OR REPLACE {ALIAS}.{tabla} SET ruta_rel = ? WHERE ruta_rel = ?",
+                     (clave(rel_nuevo), clave(rel_viejo)))
 
 
 def filtros_sql(params: Dict[str, str]) -> "tuple[List[str], List[Any]]":

@@ -20,8 +20,12 @@ Se usa solo en el PC del usuario, con un favorito a `http://localhost:8766/`.
    aparece en resultados contiene literalmente lo buscado*. No proponer de nuevo listboxes de entidades,
    tipos de documento, fechas «adivinadas» del texto ni lectura de dbGes.
    - **Etiquetas manuales (noviembre 2026, a petición del usuario):** compatibles con el principio
-     porque las pone siempre el usuario. Nunca sugerir ni asignar etiquetas automáticamente.
+     porque las pone siempre el usuario. Nunca sugerir etiquetas ni inventar reglas por cuenta propia.
      Planas (sin grupos) y de un solo puesto (sin sincronización entre equipos).
+   - **Etiquetado automático de facturas por el nombre del archivo (noviembre 2026, a petición del
+     usuario)**: única excepción, porque la regla la configura él en Preferencias y se basa en lo que dice
+     literalmente el nombre. Ver «Etiquetado automático» más abajo. El proveedor **no** se convierte en
+     etiqueta (345 distintos inundarían la lista); se encuentra escribiéndolo en la búsqueda.
    - Restos de esa etapa: `db._migrate_v1` (migración v1→v2 del índice) y el descarte de la clave
      obsoleta `dbges_sources` en `config.load_config`. Se pueden mantener; no hacen daño.
 2. **Interfaz replicada de cBank** (`C:\Users\ofici\Documents\Python\cBank`): tres paneles
@@ -50,6 +54,7 @@ finder/db.py           Esquema SQLite (data/finder_index_<fuente>.db), FTS5, mig
 finder/extraccion.py   Texto: PDF con PyMuPDF (máx. max_pages_text páginas); docx/xlsx con la stdlib. Máx. 400.000 caracteres
 finder/indexador.py    Sincronización incremental en paralelo + bucle en segundo plano
 finder/etiquetas.py    Etiquetas manuales (etiquetas_<fuente>.db, adjunta como «et» en cada conexión)
+finder/autoetiquetas.py Regla de facturas por el nombre del archivo (EMP_PROVEEDOR - NÚMERO)
 finder/ocr.py          OCR de los escaneados con el OCR de Windows (ocr_windows.ps1) + caché ocr_cache.db
 finder/remoto.py       Acceso desde Internet: verificación del JWT de Cloudflare Access y lista blanca de rutas
 finder/duplicados.py   Duplicados exactos (SHA-256): huellas, promoción de copias, consolidación, listado
@@ -168,7 +173,27 @@ tools/probar_api.py    Prueba de humo contra el servidor en marcha
   la del índice), así sobrevive a reindexar y a modificar el archivo; mover/renombrar la deja huérfana.
 - Filtros de búsqueda: `et=1,2` (todas), `etx=3` (ninguna), `sin_et=1`; los aplica `filtros_sql` en las
   dos ramas de `run_query`, así que CSV y `pdf_bundle` los respetan.
+- `doc_etiqueta.origen` = `manual` | `auto` (añadida con `ALTER` en `init_schema`). Quitar una etiqueta a mano
+  la apunta en `et.rechazos` (la regla no la vuelve a poner); ponerla a mano la convierte en manual y
+  borra el rechazo. `mover` traslada etiquetas y rechazos al renombrar. `copiar_etiquetas` (duplicados) solo
+  copia las manuales.
 - Pendiente opcional: fusionar etiquetas; reenganchar etiquetas huérfanas tras mover archivos (hash).
+
+### Etiquetado automático (`finder/autoetiquetas.py`, noviembre 2026, a petición del usuario)
+- Regla por fuente en `finder_config.json`: `fuentes[i].etiquetado_auto = {activo, etiqueta_factura,
+  empresas: [{codigo, etiqueta}]}` (se edita en Preferencias; los códigos no están en el código).
+- Patrón `EMP_PROVEEDOR - NÚMERO.ext` (código sin distinguir mayúsculas). El guion necesita un espacio al
+  menos a un lado: así `DIS_MOD200-2022` o `EWA_CIRBE_02-2024` no cuentan como factura. Al activarla había
+  ~7.870 facturas de ~13.840 documentos. La vista previa (`POST /api/autoetiquetas/probar`, solo local)
+  lista también los «casi» (empiezan por un código y tienen guion, pero no cumplen) para renombrarlos.
+- `aplicar` es idempotente y recorre toda la fuente (~0,15 s): al final de cada `sync`, tras `renombrar` y,
+  al guardar la regla, en la sincronización que lanza `fuente_modificar`. Pone las que faltan (salvo
+  rechazos) y quita las `auto` que ya no se cumplen (archivo renombrado, empresa quitada, regla
+  desactivada). Nunca toca las manuales. Las etiquetas que crea no reciben tecla 1-9.
+- Las etiquetas se identifican por **nombre**: si se renombra «TEX» en Gestionar etiquetas, la regla
+  volverá a crear «TEX». Para cambiarle el nombre, hacerlo en Preferencias.
+- UI: las automáticas se ven en la previsualización con ⚙ y rayado (`tag-pill.auto`, `get_doc` →
+  `etiquetas_auto`).
 
 ### Word y Excel (`finder/extraccion.py`, `extract_text` elige por extensión)
 - **docx**: cuerpo, encabezados, pies y notas (sin repetir bloques idénticos); un párrafo por línea y cada
@@ -242,7 +267,7 @@ POST `/api/heartbeat`, `/api/sync`, `/api/open_location` (abre el Explorador en 
 `/api/layout` (guarda anchos de paneles en `finder_config.json`), `/api/config`,
 `/api/etiquetas` (crear), `/api/etiquetas/<id>` (nombre/color/tecla), `/api/etiquetas/<id>/borrar`,
 `/api/etiquetar` (`etiqueta_id`, `accion` poner|quitar, `doc_ids` o `busqueda`), `/api/doc/<id>/renombrar`, `/api/doc/<id>/eliminar {copias}`, `/api/doc/<id>/ocr`,
-`/api/duplicados/resolver {grupos: [{conservar, eliminar}]}`, `/api/duplicados/visto`,
+`/api/duplicados/resolver {grupos: [{conservar, eliminar}]}`, `/api/duplicados/visto`, `/api/autoetiquetas/probar {fuente_id, regla}`,
 `/api/fuente/activar {id}`, `/api/fuentes` (crear), `/api/fuentes/<id>` (modificar), `/api/fuentes/<id>/borrar`.
 
 ### Ciclo de vida del proceso

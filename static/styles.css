@@ -1833,6 +1833,80 @@ div.tp-row:hover {
   margin-bottom: 14px;
   background: #fafbfd;
 }
+.auto-et {
+  border-top: 1px dashed var(--border-color);
+  padding-top: 10px;
+}
+.auto-et code {
+  font-size: 11px;
+  background: #eef2f7;
+  border-radius: 3px;
+  padding: 0 3px;
+}
+.auto-et-cuerpo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.auto-et-cuerpo.off {
+  opacity: 0.55;
+}
+.auto-et-fila,
+.auto-et-emp,
+.auto-et-emp-head {
+  display: grid;
+  grid-template-columns: 90px 1fr 28px;
+  gap: 6px;
+  align-items: center;
+}
+.auto-et-fila {
+  grid-template-columns: 140px 1fr;
+}
+.auto-et-fila label {
+  margin: 0;
+  font-size: 12px;
+}
+.auto-et-emp-head {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.auto-et-emp input.cod {
+  text-transform: uppercase;
+  font-family: monospace;
+}
+.auto-et-acciones {
+  display: flex;
+  gap: 6px;
+}
+.auto-et-preview {
+  font-size: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+}
+.auto-et-preview ul {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+}
+.auto-et-preview li {
+  word-break: break-all;
+}
+.auto-et-preview .casi {
+  color: #b45309;
+}
+.tag-pill.auto {
+  background-image: repeating-linear-gradient(135deg, transparent 0 5px, rgba(255, 255, 255, 0.18) 5px 8px);
+}
+.tag-pill.auto::before {
+  content: "⚙";
+  margin-right: 3px;
+  font-size: 0.9em;
+}
 .fuente-edit-foot {
   display: flex;
   justify-content: flex-end;

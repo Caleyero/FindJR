@@ -37,7 +37,7 @@ if sys.stderr is None:
 
 import fitz  # PyMuPDF
 
-from finder import config, duplicados, etiquetas, indexador, ocr, remoto
+from finder import autoetiquetas, config, duplicados, etiquetas, indexador, ocr, remoto
 from finder.config import BASE_DIR, fuente, load_config, save_config, to_display_path
 from finder.db import borrar_indice, get_conn, init_db, meta_get, meta_set
 from finder.extraccion import SEPARADOR_PAGINA, es_pdf
@@ -369,6 +369,8 @@ def fuente_modificar(fid: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         f["include_subfolders"] = bool(payload["include_subfolders"])
     if isinstance(payload.get("excluded_dirs"), list):
         f["excluded_dirs"] = [str(x).strip() for x in payload["excluded_dirs"] if str(x).strip()]
+    if "etiquetado_auto" in payload:  # se aplica en la sincronización que se lanza a continuación
+        f["etiquetado_auto"] = autoetiquetas.normalizar(payload["etiquetado_auto"])
     save_config(cfg)
     indexador.start_sync_async(esperar=True, fid=fid)
     return f
@@ -406,6 +408,7 @@ def get_doc(doc_id: int) -> Optional[Dict[str, Any]]:
     conn = get_conn()
     try:
         d["etiquetas"] = etiquetas.de_rutas(conn, [d["ruta_rel"]])[d["ruta_rel"]]
+        d["etiquetas_auto"] = etiquetas.automaticas(conn, d["ruta_rel"])
         d["copias"] = [{"id": c["id"], "ruta_rel": c["ruta_rel"], "ruta_display": to_display_path(c["ruta"]), "mtime": c["mtime"]}
                        for c in conn.execute("SELECT id, ruta, ruta_rel, mtime FROM archivos WHERE copia_de = ? ORDER BY mtime",
                                              (d["archivo_id"],))]
@@ -816,6 +819,14 @@ class Handler(BaseHTTPRequestHandler):
                     conn.close()
                 return self.send_json({"status": "ok"})
 
+            if route == "/api/autoetiquetas/probar":  # vista previa de la regla de Preferencias (no cambia nada)
+                fid = str(payload.get("fuente_id") or "")
+                fuente(load_config(), fid)  # valida
+                conn = get_conn(fid)
+                try:
+                    return self.send_json(autoetiquetas.vista_previa(conn, payload.get("regla")))
+                finally:
+                    conn.close()
             if route == "/api/etiquetar":
                 return self.send_json(etiquetar(payload))
 

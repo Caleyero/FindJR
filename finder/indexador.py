@@ -23,7 +23,7 @@ import traceback
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import duplicados, etiquetas, ocr
+from . import autoetiquetas, duplicados, etiquetas, ocr
 from .config import excluded_dirs, fuente, load_config, to_display_path, to_local_path
 from .db import get_conn, init_db, meta_set
 from .extraccion import es_pdf, extract_text
@@ -282,6 +282,11 @@ def sync(force_reindex: bool = False, fid: Optional[str] = None) -> Dict[str, An
         with conn:
             duplicados.refrescar_rutas(conn)
             meta_set(conn, "ultima_sync", datetime.datetime.now().isoformat(timespec="seconds"))
+        try:  # etiquetas automáticas por el nombre (nuevos, renombrados fuera de la app, regla cambiada)
+            res["autoetiquetas"] = autoetiquetas.aplicar(conn, fte.get("etiquetado_auto"))
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            res["autoetiquetas_error"] = str(e)
         conn.close()
         res["elapsed_sec"] = round(time.time() - t0, 1)
         _set_state(ultimo=res)
@@ -367,11 +372,14 @@ def renombrar(doc_id: int, nueva_base: str, fid: Optional[str] = None) -> Dict[s
                     # El trigger documentos_au actualiza el índice de texto completo (nombre y ruta)
                     conn.execute("UPDATE documentos SET nombre = ?, ruta_rel = ? WHERE archivo_id = ?",
                                  (nombre_nuevo, rel_nuevo, r["id"]))
-                    conn.execute(f"UPDATE OR REPLACE {etiquetas.ALIAS}.doc_etiqueta SET ruta_rel = ? WHERE ruta_rel = ?",
-                                 (etiquetas.clave(rel_nuevo), etiquetas.clave(rel_viejo)))
+                    etiquetas.mover(conn, rel_viejo, rel_nuevo)
             except Exception:
                 os.rename(nuevo, viejo)  # el índice no se ha podido actualizar: se deja todo como estaba
                 raise
+            try:  # el nombre nuevo puede cumplir (o dejar de cumplir) la regla de facturas
+                autoetiquetas.aplicar(conn, fuente(load_config(), fid).get("etiquetado_auto"))
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
             return {"anterior": nombre_viejo, "nombre": nombre_nuevo, "cambiado": True}
         finally:
             conn.close()

@@ -533,6 +533,14 @@ async function pollStatus() {
         await loadInfo();
         await runSearch(false);
       }
+      const ae = u.status === "ok" && u.fuente === state.fuente && u.autoetiquetas;
+      if (ae && (ae.puestas || ae.quitadas)) {
+        // Etiquetado automático por el nombre (archivos nuevos o renombrados, o regla cambiada en Preferencias)
+        const partes = [ae.puestas && `${fmtNum(ae.puestas)} puestas`, ae.quitadas && `${fmtNum(ae.quitadas)} quitadas`].filter(Boolean);
+        if (!(u.added || u.updated || u.removed || u.duplicados)) showToast(`Etiquetas automáticas: ${partes.join(", ")}.`, 3800);
+        await loadEtiquetas();
+        if (!(u.added || u.updated || u.removed || u.duplicados)) await runSearch(false, { keepPreview: true, keepChecks: true });
+      }
     }
     state.wasIndexing = !!estado.activo;
   } catch (e) {
@@ -596,6 +604,92 @@ function prefsLeerFormulario() {
   f.biblioteca = document.getElementById("prefBiblioteca").value.trim();
   f.include_subfolders = document.getElementById("prefIncludeSubfolders").checked;
   f.excluded_dirs = readCatalogList("excludedListContainer", "newExcludedInput");
+  f.etiquetado_auto = autoLeerFormulario();
+}
+
+const AUTO_DEFECTO = { activo: false, etiqueta_factura: "Factura", empresas: [] };
+
+function autoNormal(r) {
+  r = r || AUTO_DEFECTO;
+  return {
+    activo: !!r.activo,
+    etiqueta_factura: (r.etiqueta_factura ?? "Factura").trim(),
+    empresas: (r.empresas || []).map((e) => ({ codigo: e.codigo, etiqueta: e.etiqueta || e.codigo })),
+  };
+}
+
+function autoLeerFormulario() {
+  const empresas = [...document.querySelectorAll("#prefAutoEmpresas .auto-et-emp")]
+    .map((row) => {
+      const codigo = row.querySelector(".cod").value.trim().toUpperCase();
+      return { codigo, etiqueta: row.querySelector(".etq").value.trim() || codigo };
+    })
+    .filter((e) => e.codigo);
+  return {
+    activo: document.getElementById("prefAutoActivo").checked,
+    etiqueta_factura: document.getElementById("prefAutoFactura").value.trim(),
+    empresas,
+  };
+}
+
+function autoAddEmpresa(e = { codigo: "", etiqueta: "" }) {
+  const row = document.createElement("div");
+  row.className = "auto-et-emp";
+  row.innerHTML = `<input type="text" class="cod" maxlength="10" placeholder="TEX" value="${escapeHtml(e.codigo)}" />
+    <input type="text" class="etq" maxlength="40" placeholder="Etiqueta (por defecto, el código)" value="${escapeHtml(e.etiqueta === e.codigo ? "" : e.etiqueta)}" />
+    <button type="button" class="btn btn-xs btn-outline" title="Quitar esta empresa">&times;</button>`;
+  row.querySelector("button").addEventListener("click", () => row.remove());
+  document.getElementById("prefAutoEmpresas").appendChild(row);
+  return row;
+}
+
+function autoMostrar(r) {
+  r = autoNormal(r);
+  document.getElementById("prefAutoActivo").checked = r.activo;
+  document.getElementById("prefAutoFactura").value = r.etiqueta_factura;
+  document.getElementById("prefAutoEmpresas").innerHTML = "";
+  r.empresas.forEach(autoAddEmpresa);
+  document.getElementById("prefAutoPreview").style.display = "none";
+  autoPintarActivo();
+}
+
+function autoPintarActivo() {
+  document.getElementById("prefAutoCuerpo").classList.toggle("off", !document.getElementById("prefAutoActivo").checked);
+}
+
+async function autoVistaPrevia(fid, regla) {
+  return apiPost("/api/autoetiquetas/probar", { fuente_id: fid, regla });
+}
+
+function autoResumenHtml(v) {
+  const etq = Object.entries(v.por_etiqueta)
+    .map(([n, c]) => `<b>${escapeHtml(n)}</b> ${fmtNum(c)}`)
+    .join(" · ");
+  let h = `<div><b>${fmtNum(v.cumplen)}</b> de ${fmtNum(v.total)} documentos cumplen el patrón${etq ? `: ${etq}` : "."}</div>`;
+  if (v.ejemplos.length) h += `<ul>${v.ejemplos.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`;
+  if (v.casi_total)
+    h += `<div class="casi">${fmtNum(v.casi_total)} empiezan por un código de empresa pero <b>no</b> cumplen el patrón (no se etiquetan; si son facturas, renómbralos):</div>
+      <ul class="casi">${v.casi.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}${v.casi_total > v.casi.length ? "<li>…</li>" : ""}</ul>`;
+  return h;
+}
+
+function autoResumenTexto(v) {
+  const etq = Object.entries(v.por_etiqueta).map(([n, c]) => `  · ${n}: ${fmtNum(c)}`).join("\n");
+  let t = `${fmtNum(v.cumplen)} de ${fmtNum(v.total)} documentos cumplen el patrón.\n${etq}`;
+  if (v.ejemplos.length) t += `\n\nEjemplos:\n${v.ejemplos.slice(0, 3).map((x) => "  " + x).join("\n")}`;
+  if (v.casi_total) t += `\n\n${fmtNum(v.casi_total)} empiezan por un código pero no cumplen el patrón (no se etiquetan).`;
+  return t;
+}
+
+async function autoProbar() {
+  const box = document.getElementById("prefAutoPreview");
+  box.style.display = "";
+  box.textContent = "Comprobando…";
+  try {
+    box.innerHTML = autoResumenHtml(await autoVistaPrevia(prefs.sel, autoLeerFormulario()));
+  } catch (err) {
+    box.textContent = "Error: " + err.message;
+  }
 }
 
 function prefsMostrarFuente(id) {
@@ -609,6 +703,7 @@ function prefsMostrarFuente(id) {
   const list = document.getElementById("excludedListContainer");
   list.innerHTML = "";
   (f.excluded_dirs || []).forEach((d) => appendCatalogRow("excludedListContainer", d));
+  autoMostrar(f.etiquetado_auto);
   const orig = prefs.originales[id] || {};
   const st = document.getElementById("prefFolderStatus");
   if (!f.biblioteca) st.textContent = "Indica la carpeta de esta fuente (ruta local o de red).";
@@ -658,7 +753,7 @@ async function openPrefsModal(fid = null) {
     const [cfgData, fData] = await Promise.all([(await fetch("/api/config")).json(), (await fetch("/api/fuentes")).json()]);
     document.getElementById("prefInterval").value = (cfgData.config || {}).sync_interval_min || 10;
     prefs.fuentes = fData.items.map((f) => ({ id: f.id, nombre: f.nombre, color: f.color, biblioteca: f.biblioteca,
-      include_subfolders: f.include_subfolders, excluded_dirs: f.excluded_dirs }));
+      include_subfolders: f.include_subfolders, excluded_dirs: f.excluded_dirs, etiquetado_auto: autoNormal(f.etiquetado_auto) }));
     prefs.originales = Object.fromEntries(fData.items.map((f) => [f.id, JSON.parse(JSON.stringify(f))]));
     prefs.sel = null;
     prefsMostrarFuente(typeof fid === "string" ? fid : fData.activa);
@@ -698,6 +793,19 @@ async function savePrefs() {
       const cambios = {};
       ["nombre", "biblioteca", "include_subfolders"].forEach((k) => f[k] !== o[k] && (cambios[k] = f[k]));
       if (JSON.stringify(f.excluded_dirs || []) !== JSON.stringify(o.excluded_dirs || [])) cambios.excluded_dirs = f.excluded_dirs;
+      const autoAntes = autoNormal(o.etiquetado_auto);
+      if (JSON.stringify(f.etiquetado_auto) !== JSON.stringify(autoAntes)) {
+        // Vista previa antes de aplicar la regla a todos los documentos de la fuente
+        if (f.etiquetado_auto.activo) {
+          const v = await autoVistaPrevia(f.id, f.etiquetado_auto);
+          if (!confirm(`Etiquetado automático de «${f.nombre}»\n\n${autoResumenTexto(v)}\n\n` +
+              "¿Aplicar la regla? Se pondrán estas etiquetas (y se quitarán las automáticas que ya no la cumplan). " +
+              "Las etiquetas puestas a mano no se tocan.")) return;
+        } else if (autoAntes.activo &&
+            !confirm(`¿Desactivar el etiquetado automático de «${f.nombre}»?\n\n` +
+              "Se quitarán las etiquetas que puso automáticamente. Las puestas a mano se conservan.")) return;
+        cambios.etiquetado_auto = f.etiquetado_auto;
+      }
       if (Object.keys(cambios).length) await apiPost(`/api/fuentes/${f.id}`, cambios);
     }
     await apiPost("/api/config", { sync_interval_min: parseInt(document.getElementById("prefInterval").value, 10) || 10 });
@@ -953,6 +1061,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btnCancelPrefs").addEventListener("click", closePrefs);
   document.getElementById("btnSavePrefs").addEventListener("click", savePrefs);
   document.getElementById("btnQuitarFuente").addEventListener("click", quitarFuente);
+  document.getElementById("prefAutoActivo").addEventListener("change", autoPintarActivo);
+  document.getElementById("btnAutoAddEmpresa").addEventListener("click", () => autoAddEmpresa().querySelector(".cod").focus());
+  document.getElementById("btnAutoProbar").addEventListener("click", autoProbar);
   document.getElementById("btnReindexAll").addEventListener("click", () => {
     if (!confirm(`¿Volver a leer desde cero todos los documentos de «${nombreFuente()}»? Tardará unos minutos.`)) return;
     closePrefs();
@@ -1153,8 +1264,10 @@ function sortedTagIds(ids) {
   return (ids || []).filter((id) => state.etMap[id]).sort((a, b) => state.etMap[a].nombre.localeCompare(state.etMap[b].nombre, "es"));
 }
 
-function tagPill(t, extra = "") {
-  return `<span class="tag-pill" style="--tag:${t.color}" data-tag-id="${t.id}">${escapeHtml(t.nombre)}${extra}</span>`;
+function tagPill(t, extra = "", auto = false) {
+  const cls = auto ? "tag-pill auto" : "tag-pill";
+  const title = auto ? ` title="Puesta automáticamente por el nombre del archivo (Preferencias). Si la quitas, no se vuelve a poner."` : "";
+  return `<span class="${cls}" style="--tag:${t.color}" data-tag-id="${t.id}"${title}>${escapeHtml(t.nombre)}${extra}</span>`;
 }
 
 function tagPillsHtml(ids) {
@@ -1291,6 +1404,8 @@ async function applyTag(tagId, poner, target) {
         const set = new Set(o.etiquetas || []);
         poner ? set.add(tagId) : set.delete(tagId);
         o.etiquetas = [...set];
+        // Puesta o quitada a mano: deja de ser automática
+        if (o.etiquetas_auto) o.etiquetas_auto = o.etiquetas_auto.filter((x) => x !== tagId);
       });
     });
     const quien = target.n === 1 ? "1 documento" : `${fmtNum(target.n)} documentos`;
@@ -1324,7 +1439,9 @@ function renderPreviewTags() {
   if (!doc) return (c.style.display = "none");
   c.style.display = "flex";
   c.innerHTML =
-    sortedTagIds(doc.etiquetas).map((id) => tagPill(state.etMap[id], `<button type="button" class="tag-x" title="Quitar etiqueta">&times;</button>`)).join("") +
+    sortedTagIds(doc.etiquetas)
+      .map((id) => tagPill(state.etMap[id], `<button type="button" class="tag-x" title="Quitar etiqueta">&times;</button>`, (doc.etiquetas_auto || []).includes(id)))
+      .join("") +
     `<button type="button" class="tag-add" id="btnPrevAddTag" title="Poner o quitar etiquetas a este documento (o usa las teclas 1-9)">+ Etiqueta</button>`;
   c.querySelectorAll(".tag-x").forEach((x) =>
     x.addEventListener("click", () => applyTag(parseInt(x.parentElement.dataset.tagId, 10), false, currentTarget("doc")))

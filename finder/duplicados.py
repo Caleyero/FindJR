@@ -51,13 +51,15 @@ def principal_de(conn: sqlite3.Connection, h: str, excluir: Optional[int] = None
 
 
 def copiar_etiquetas(conn: sqlite3.Connection, de_rutas: List[str], a_ruta: str) -> None:
-    """Las etiquetas puestas a mano en una copia pasan también a la que se queda (no se quita ninguna)."""
+    """Las etiquetas puestas a mano en una copia pasan también a la que se queda (no se quita ninguna).
+    Las automáticas no: las decide la regla según el nombre de la que se queda."""
     claves = [etiquetas.clave(r) for r in de_rutas if r]
     if not claves:
         return
     conn.execute(
         f"""INSERT OR IGNORE INTO {etiquetas.ALIAS}.doc_etiqueta (ruta_rel, etiqueta_id)
-            SELECT ?, etiqueta_id FROM {etiquetas.ALIAS}.doc_etiqueta WHERE ruta_rel IN ({','.join('?' * len(claves))})""",
+            SELECT ?, etiqueta_id FROM {etiquetas.ALIAS}.doc_etiqueta
+            WHERE origen = 'manual' AND ruta_rel IN ({','.join('?' * len(claves))})""",
         [etiquetas.clave(a_ruta)] + claves)
 
 

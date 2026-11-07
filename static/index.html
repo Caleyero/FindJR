@@ -475,6 +475,28 @@
           </div>
           <small class="form-help">Cualquier carpeta con ese nombre, a cualquier nivel, se ignora.</small>
         </div>
+        <div class="form-group auto-et">
+          <label class="checkbox-label">
+            <input type="checkbox" id="prefAutoActivo" />
+            <b>Etiquetar facturas automáticamente por el nombre del archivo</b>
+          </label>
+          <small class="form-help">Patrón: <code>EMP_PROVEEDOR - NÚMERO.pdf</code>, p. ej.
+            <code>TEX_TELEFONICA MOVILES SA - 6546594.pdf</code>. El que lo cumple recibe la etiqueta de facturas y la de
+            su empresa. Si quitas a mano una etiqueta automática, no se vuelve a poner.</small>
+          <div class="auto-et-cuerpo" id="prefAutoCuerpo">
+            <div class="auto-et-fila">
+              <label for="prefAutoFactura">Etiqueta de facturas</label>
+              <input type="text" id="prefAutoFactura" maxlength="40" placeholder="Factura" />
+            </div>
+            <div class="auto-et-emp-head"><span>Código</span><span>Etiqueta de la empresa</span></div>
+            <div id="prefAutoEmpresas"></div>
+            <div class="auto-et-acciones">
+              <button type="button" class="btn btn-sm btn-secondary" id="btnAutoAddEmpresa">+ Empresa</button>
+              <button type="button" class="btn btn-sm btn-outline" id="btnAutoProbar" title="Ver qué archivos cumplen el patrón sin cambiar nada">Comprobar</button>
+            </div>
+            <div class="auto-et-preview" id="prefAutoPreview" style="display: none;"></div>
+          </div>
+        </div>
         <div class="fuente-edit-foot">
           <button type="button" class="btn btn-sm btn-outline btn-delete" id="btnQuitarFuente">
             <svg class="icon"><use href="#ico-trash"></use></svg> Quitar esta fuente
